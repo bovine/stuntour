@@ -32,7 +32,7 @@
 
 // Transparent SSL Tunnel hooking.
 // Jeff Lawson <jlawson@bovine.net>
-// $Id: sectunnel.cpp,v 1.2 2003/05/18 22:10:47 jlawson Exp $
+// $Id: sectunnel.cpp,v 1.3 2003/06/01 23:53:03 jlawson Exp $
 
 // Our private header
 #include "stuntour.h"
@@ -86,7 +86,7 @@ SecureTunnel *SecureTunnel::GetFromSSL(SSL *inssl)
  *          was connecting to.
  * \return Returns a pointer to the new SecureTunnel class instance.
  */
-SecureTunnel *SecureTunnel::Attach(SOCKET insock, const sockaddr_in &inaddr)
+SecureTunnel *SecureTunnel::Attach(SOCKET insock, const sockaddr_in &inaddr, bool bAcceptNotConnect)
 {
     // construct a new class instance.
     SecureTunnel *newobj = new SecureTunnel(insock, inaddr);
@@ -118,17 +118,28 @@ SecureTunnel *SecureTunnel::Attach(SOCKET insock, const sockaddr_in &inaddr)
     // Associate the socket with the SSL object.
     SSL_set_fd(newobj->ssl, (int) insock);
 
-    // Sets ssl to work in client mode.
-    SSL_set_connect_state(newobj->ssl);
 
     // make blocking mode sockets not return until completion.
     SSL_set_mode(newobj->ssl, SSL_MODE_AUTO_RETRY);
             // TODO: maybe use SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER
 
-    // Try to connect the ssl tunnel.
-    int num = SSL_connect(newobj->ssl);
-    if (num <= 0) {
-        int sslerror = (int) SSL_get_error(newobj->ssl, num);
+
+    int numval;
+    if (bAcceptNotConnect) {
+        // Sets ssl to work in server mode.
+        SSL_set_accept_state(newobj->ssl);
+AcceptAgain:
+        // Try to connect the ssl tunnel.
+        numval = SSL_accept(newobj->ssl);
+    } else {
+        // Sets ssl to work in client mode.
+        SSL_set_connect_state(newobj->ssl);
+
+        // Try to connect the ssl tunnel.
+        numval = SSL_connect(newobj->ssl);
+    }
+    if (numval <= 0) {
+        int sslerror = (int) SSL_get_error(newobj->ssl, numval);
         int wsagle = WSAGetLastError();
         switch (sslerror) {
             case SSL_ERROR_NONE:
@@ -140,24 +151,43 @@ SecureTunnel *SecureTunnel::Attach(SOCKET insock, const sockaddr_in &inaddr)
             case SSL_ERROR_WANT_READ:
             case SSL_ERROR_WANT_X509_LOOKUP:
                 // not an error, but the connection could not be established yet.
-                DOUT(("SSL_connect deferred SSL establishment because of a %s condition.\n",
+                DOUT(("SSL_connect/SSL_accept deferred SSL establishment because of a %s condition.\n",
                       TranslateSSLError(sslerror) ));
+                if (bAcceptNotConnect) {
+                    if (sslerror == SSL_ERROR_WANT_WRITE) {
+                        WaitForWritability(insock);
+                        DOUT(("Socket is now writable, retrying accept.\n"));
+                        goto AcceptAgain;
+                    } else if (sslerror == SSL_ERROR_WANT_READ) {
+                        WaitForReadability(insock);
+                        DOUT(("Socket is now readable, retrying accept.\n"));
+                        goto AcceptAgain;
+                    }
+                }
                 break;
 
             case SSL_ERROR_SYSCALL:
                 if (wsagle == WSAENOTCONN) {
                     // not an error, but the connection could not be established yet.
                     // (probably socket is non-blocking and the connect() is not done.)
-                    DOUT(("SSL_connect deferred SSL establishment because not yet connected.\n"));
+                    DOUT(("SSL_connect/SSL_accept deferred SSL establishment because not yet connected.\n"));
                     break;
                 }
                 // otherwise drop through to default case.
 
-            default:
-                DOUT(("SSL_connect returning failure (%s, %s)\n",
+            default: {
+                DOUT(("SSL_connect/SSL_accept returned failure (%s, %s)\n",
                       TranslateSSLError(sslerror), TranslateWinsockError(wsagle)));
+#ifndef NDEBUG
+                FILE *fp = fopen("sslerror.txt", "wt");
+                if (fp != NULL) {
+                    ERR_print_errors_fp(fp);
+                    fclose(fp);
+                }
+#endif
                 delete newobj;
                 return NULL;
+            }
         }
     }
 

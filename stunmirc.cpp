@@ -32,7 +32,7 @@
 
 // Transparent SSL Tunnel hooking.
 // Jeff Lawson <jlawson@bovine.net>
-// $Id: stunmirc.cpp,v 1.3 2003/05/18 22:10:47 jlawson Exp $
+// $Id: stunmirc.cpp,v 1.4 2003/06/01 23:53:03 jlawson Exp $
 
 #include "stuntour.h"
 
@@ -267,8 +267,13 @@ extern "C" int __declspec(dllexport) __stdcall hook_ports(
     DOUT(("mIRC callback for hook_ports invoked\n"));
 
     if (data != NULL) {
-        unsigned short portnum = static_cast<unsigned short>(atoi(data));
-        AddInterceptedPort(portnum);
+        if (strncmp(data, "-oneshot ", 9) == 0) {
+            // one-shot port interception.
+            AddInterceptedPort(static_cast<unsigned short>(atoi(data + 9)), true);
+        } else {
+            // normal port interception.
+            AddInterceptedPort(static_cast<unsigned short>(atoi(data)), false);
+        }
     }
 
     strcpy(data, "/echo -s StunTour transparent SSL hook active for: ");

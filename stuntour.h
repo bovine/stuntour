@@ -32,7 +32,7 @@
 
 // Transparent SSL Tunnel hooking.
 // Jeff Lawson <jlawson@bovine.net>
-// $Id: stuntour.h,v 1.3 2003/05/18 22:10:47 jlawson Exp $
+// $Id: stuntour.h,v 1.4 2003/06/01 23:53:03 jlawson Exp $
 
 #ifndef STUNTOUR_H__
 #define STUNTOUR_H__
@@ -127,8 +127,12 @@ class SecureTunnel {
 #endif
 
     //! protected constructors.
-    SecureTunnel() : ssl(NULL), sock(INVALID_SOCKET), bAccepted(false) { addr.sin_addr.S_un.S_addr = INADDR_NONE; };
-    SecureTunnel(SOCKET s, const sockaddr_in &inaddr) : addr(inaddr), ssl(NULL), sock(s), bAccepted(false) {};
+    SecureTunnel() : ssl(NULL), sock(INVALID_SOCKET), bCertificateAccepted(false) { 
+        addr.sin_addr.S_un.S_addr = INADDR_NONE;
+    };
+    SecureTunnel(SOCKET s, const sockaddr_in &inaddr) : addr(inaddr), ssl(NULL), sock(s), bCertificateAccepted(false) {
+        // nothing else.
+    };
 
 public:
 
@@ -136,7 +140,7 @@ public:
     ~SecureTunnel();
 
     //! The publicly exposed method for creating a new secure connection.
-    static SecureTunnel *Attach(SOCKET s, const sockaddr_in &inaddr);
+    static SecureTunnel *Attach(SOCKET s, const sockaddr_in &inaddr, bool bAcceptNotConnect);
 
     // Network send and receive methods called from the winsock hooks.
     int Send(const char FAR *buf, int len);
@@ -151,7 +155,7 @@ public:
     SSL *GetSSL() { return ssl; }
 
     //! Certificate acceptance state.
-    bool bAccepted;
+    bool bCertificateAccepted;
 };
 
 
@@ -184,7 +188,7 @@ void SearchAndSubclassWindow(void);
 HWND GetOurParentWindow(void);
 
 // port interception list functions.
-bool AddInterceptedPort(unsigned short portnum);
+bool AddInterceptedPort(unsigned short uPortNum, bool bOneShot);
 std::string QueryInterceptedPortListSpace();
 
 // certificate acceptance function.

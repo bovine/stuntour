@@ -32,7 +32,7 @@
 
 // Transparent SSL Tunnel hooking.
 // Jeff Lawson <jlawson@bovine.net>
-// $Id: stundlg.cpp,v 1.3 2003/05/18 22:10:47 jlawson Exp $
+// $Id: stundlg.cpp,v 1.4 2003/06/01 23:53:03 jlawson Exp $
 
 #include "stuntour.h"
 #include "resource.h"
@@ -88,7 +88,7 @@ bool CheckAllowCertificate(ConfirmationDialogData *confinfo)
     // OpenSSL will sometimes call the certificate verification routine 
     // multiple times when establishing a connection, but we should not
     // prompt the user to confirm the same connection multiple times.
-    if (confinfo->stunnel->bAccepted) {
+    if (confinfo->stunnel->bCertificateAccepted) {
         DOUT(("stundlg: Returning acceptance since this stunnel object has already been authorized.\n"));
         return true;
     }
@@ -253,8 +253,12 @@ static INT_PTR CALLBACK ConfirmCertificateDialogProc(
     switch (uMsg) {
         case WM_INITDIALOG:
         {
-            ConfirmationDialogData *confinfo = reinterpret_cast<ConfirmationDialogData*>(lParam);
+            ConfirmationDialogData *confinfo = reinterpret_cast<ConfirmationDialogData*>(lParam);            
             SetWindowLongPtr(hwndDlg, GWLP_USERDATA, (LONG) (LONG_PTR) confinfo);
+
+            // Start the checkbox unchecked.
+            confinfo->bRememberChoice = false;
+            CheckDlgButton(hwndDlg, IDC_CHECKREMEMBER, BST_UNCHECKED);
 
             // If there is another confirmation dialog already open, then close it.
             if (IsWindow(hwndLastConfirmDialog)) {
@@ -276,18 +280,24 @@ static INT_PTR CALLBACK ConfirmCertificateDialogProc(
             { 
             case IDYES:
             case IDNO:
-            case IDCANCEL:
-                EndDialog(hwndDlg, LOWORD(wParam) );
+            case IDCANCEL: {
+                ConfirmationDialogData *confinfo = reinterpret_cast<ConfirmationDialogData*>((LONG_PTR) GetWindowLongPtr(hwndLastConfirmDialog, GWLP_USERDATA));
+                confinfo->bRememberChoice = (IsDlgButtonChecked(hwndLastConfirmDialog, IDC_CHECKREMEMBER) == BST_CHECKED);
+                EndDialog(hwndDlg, LOWORD(wParam));
                 return TRUE;
+            }
 
             default: break;
             }
             break;
 
-        case WM_STUNTOUR_CLOSE:
+        case WM_STUNTOUR_CLOSE: {
             DOUT(("stundlg: Got close request for dialog %p\n", hwndDlg));
+            ConfirmationDialogData *confinfo = reinterpret_cast<ConfirmationDialogData*>((LONG_PTR) GetWindowLongPtr(hwndLastConfirmDialog, GWLP_USERDATA));
+            confinfo->bRememberChoice = (IsDlgButtonChecked(hwndLastConfirmDialog, IDC_CHECKREMEMBER) == BST_CHECKED);
             EndDialog(hwndDlg, IDCANCEL);
             return TRUE;
+        }
 
         default: break;
     }

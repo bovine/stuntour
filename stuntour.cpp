@@ -32,7 +32,7 @@
 
 // Transparent SSL Tunnel hooking.
 // Jeff Lawson <jlawson@bovine.net>
-// $Id: stuntour.cpp,v 1.5 2003/05/18 22:10:47 jlawson Exp $
+// $Id: stuntour.cpp,v 1.6 2003/06/01 23:53:03 jlawson Exp $
 
 /*
  * The implementation of the replacement API wrappers for the send/recv
@@ -82,6 +82,11 @@ static unsigned short intercepted_ports[128] = {
     0     // terminating entry in list (don't remove).
 };
 
+//! This list is for one-shot port hooking.
+static unsigned short oneshot_intercepted_ports[128] = {
+    0     // terminating entry in list (don't remove).
+};
+
 
 //! Global mutex variables to allow thread-safe access to the map.
 static CRITICAL_SECTION maplock;
@@ -118,6 +123,9 @@ DETOUR_TRAMPOLINE(int WINAPI Trampoline_recv(
 DETOUR_TRAMPOLINE(int WINAPI Trampoline_closesocket(
         SOCKET /*s*/),
                   closesocket);
+DETOUR_TRAMPOLINE(SOCKET WINAPI Trampoline_accept(
+        SOCKET /*s*/, struct sockaddr* /*addr*/, int* /*addrlen*/),
+                  accept);
 
 
 //! Macro used to simplify error message translation.
@@ -246,22 +254,32 @@ const char *TranslateWinsockError(int errorcode) {
 }
 
 
-/*
 //! Puts a socket into blocking mode.
+/*!
+ * \return On error, returns SOCKET_ERROR.  Otherwise returns the previous 
+ *      blocking state (0=was already in blocking mode, 1=was previously in non-blocking).
+ */
 static int SetSocketBlocking(SOCKET sock)
 {
     unsigned long value = 0;
-    return ioctlsocket(sock, FIONBIO, &value);
+    int retval = ioctlsocket(sock, FIONBIO, &value);
+    if (retval != 0) return SOCKET_ERROR;
+    return (int) value;
 }
 
 //! Puts a socket into non-blocking mode.
+/*!
+ * \return On error, returns SOCKET_ERROR.  Otherwise returns the previous
+ *      blocking state (0=was previously in blocking mode, 1=was already in non-blocking).
+ */
 static int SetSocketNonBlocking(SOCKET sock)
 {
     // Use with a nonzero argp parameter to enable the nonblocking mode.
     unsigned long value = 1;
-    return ioctlsocket(sock, FIONBIO, &value);
+    int retval = ioctlsocket(sock, FIONBIO, &value);
+    if (retval != 0) return SOCKET_ERROR;
+    return (int) value;
 }
-*/
 
 
 //! Returns a copy of the input buffer with non-printable characters masked.
@@ -293,10 +311,25 @@ static bool IsInterceptedPort(unsigned short portnum)
     for (int i = 0; intercepted_ports[i] != 0; i++) {
         if (intercepted_ports[i] == portnum) return true;
     }
+
+    // Check the one-shot list of ports.
+    for (int j = 0; oneshot_intercepted_ports[j] != 0; j++) {
+        if (oneshot_intercepted_ports[j] == portnum) {
+            // remove that port from the list, since it is only one-shot.
+            do {
+                oneshot_intercepted_ports[j] = oneshot_intercepted_ports[j + 1];
+            } while (oneshot_intercepted_ports[j++] != 0);
+            return true;
+        }
+    }
     return false;
 }
 
 //! Generates a string containing a list of all ports being hooked.
+/*!
+ * The list includes normal AND one-shot hooked ports.
+ * The entries in the list are separated by spaces.
+ */
 std::string QueryInterceptedPortListSpace()
 {
     std::string output;
@@ -305,10 +338,19 @@ std::string QueryInterceptedPortListSpace()
         _snprintf(buf, sizeof(buf), "%u ", intercepted_ports[i]);
         output += buf;
     }
+    for (int j = 0; oneshot_intercepted_ports[j] != 0; j++) {
+        char buf[32];
+        _snprintf(buf, sizeof(buf), "(%u) ", oneshot_intercepted_ports[j]);
+        output += buf;
+    }
     return output;
 }
 
-//! Generates a string containing a list of all ports being hooked.
+//! Generates a string containing a list of all normal ports being hooked.
+/*!
+ * The list does not include one-shot hooked ports.
+ * The entries in the list are separated by NUL characters.
+ */
 static std::string QueryInterceptedPortListNull()
 {
     std::string output;
@@ -323,25 +365,41 @@ static std::string QueryInterceptedPortListNull()
 
 
 //! Adds an additional port number to the internal list.
-bool AddInterceptedPort(unsigned short portnum)
+bool AddInterceptedPort(unsigned short uPortNum, bool bOneShot)
 {
-    if (portnum == 0) {
+    if (uPortNum == 0) {
         return false;        // port cannot be zero.
     }
 
     // Check the port in our built-in list of ports to hook.
-    for (int i = 0; i < sizeof(intercepted_ports) / sizeof(intercepted_ports[0]) - 1; i++) {
-        if (intercepted_ports[i] == portnum) {
-            DOUT(("AddInterceptedPort: port %u is already added\n", portnum));
-            return true;        // already in list, nothing needs to be done.
+    if (bOneShot) {
+        // add it to the temporary (one-shot) list.
+        for (int i = 0; i < sizeof(oneshot_intercepted_ports) / sizeof(oneshot_intercepted_ports[0]) - 1; i++) {
+            if (oneshot_intercepted_ports[i] == uPortNum) {
+                DOUT(("AddInterceptedPort: port %u is already one-shot added\n", uPortNum));
+                return true;        // already in list, nothing needs to be done.
+            }
+            if (oneshot_intercepted_ports[i] == 0) {
+                oneshot_intercepted_ports[i] = uPortNum;
+                DOUT(("AddInterceptedPort: successfully added one-shot port %u\n", uPortNum));
+                return true;        // successfully added.
+            }
         }
-        if (intercepted_ports[i] == 0) {
-            intercepted_ports[i] = portnum;
-            DOUT(("AddInterceptedPort: successfully added port %u\n", portnum));
-            return true;        // successfully added.
+    } else {
+        // add it to the normal list.
+        for (int i = 0; i < sizeof(intercepted_ports) / sizeof(intercepted_ports[0]) - 1; i++) {
+            if (intercepted_ports[i] == uPortNum) {
+                DOUT(("AddInterceptedPort: port %u is already added\n", uPortNum));
+                return true;        // already in list, nothing needs to be done.
+            }
+            if (intercepted_ports[i] == 0) {
+                intercepted_ports[i] = uPortNum;
+                DOUT(("AddInterceptedPort: successfully added port %u\n", uPortNum));
+                return true;        // successfully added.
+            }
         }
     }
-    DOUT(("AddInterceptedPort: could not add port %u because list is full\n", portnum));
+    DOUT(("AddInterceptedPort: could not add port %u because list is full\n", uPortNum));
     return false;       // port could not be added (due to maximum size).
 }
 
@@ -371,7 +429,7 @@ static void InitializeInterceptedPortList(void)
                     *skip = '\0';
 
                     unsigned short portnum = (unsigned short) atoi(p);
-                    AddInterceptedPort(portnum);
+                    AddInterceptedPort(portnum, false);
                     p = skip;
                 } else {
                     p++;
@@ -443,7 +501,7 @@ static int WINAPI Detour_connect(
     // Build the associated SSL state information around the socket.
     DOUT(("Detour_connect: attaching SSL onto connection to %s:%d (socket %d)\n",
           inet_ntoa(inaddr.sin_addr), (int) ntohs(inaddr.sin_port), (int) insock));
-    SecureTunnel *stun = SecureTunnel::Attach(insock, inaddr);
+    SecureTunnel *stun = SecureTunnel::Attach(insock, inaddr, false);
     if (!stun) {
         // We expect Attach() to call WSASetLastError() for us.
         // Note that for this case, the socket is actually still left open!
@@ -452,16 +510,83 @@ static int WINAPI Detour_connect(
     }
 
     // Add the tracking information to our storage container.
+    EnterCriticalSection(&maplock);
 #ifdef USE_MAKEPAIR
     SecureTunnelMap.insert(std::make_pair(insock, stun));
 #else
     SecureTunnelMap.insert(std::pair<const SOCKET, SecureTunnel*>(insock, stun));
 #endif
+    LeaveCriticalSection(&maplock);
 
+    DOUT(("Detour_connect: successfully connected and attached to socket %d.\n", insock));
 
     return 0;
 }
 
+
+//! This is our hook that is installed in place of the normal
+//! Winsock accept() API.
+static SOCKET WINAPI Detour_accept(SOCKET insock, struct sockaddr *addr, int *addrlen)
+{
+    DOUT(("Detour_accept called\n"));
+
+    // If any of the arguments look bogus, then immediately bail out and
+    // just let the original Winsock method handle it.
+    if (!insock || insock == INVALID_SOCKET) 
+    {
+        // This looks like a bogus connection attempt, so we'll ignore it
+        // and just let the system API handle the error code.
+        DOUT(("Detour_accept: bypassing connect, due to bogus inputs\n"));
+        return Trampoline_accept(insock, addr, addrlen);
+    }
+
+
+    // Decide if we should intercept this connection or not.
+    sockaddr_in inaddr;
+    int inaddrlen = sizeof(inaddr);
+    if (getsockname(insock, reinterpret_cast<sockaddr *>(&inaddr), &inaddrlen) != 0) {
+        // This isn't a connection to a port that we are configured to hook.
+        DOUT(("Detour_accept: bypassing hook, because the socket's listening port could not be determined\n"));
+        return Trampoline_accept(insock, addr, addrlen);
+    }
+    if (!IsInterceptedPort(ntohs(inaddr.sin_port))) {
+        // This isn't a connection to a port that we are configured to hook.
+        DOUT(("Detour_accept: bypassing hook, due to non-intercepted port (listener for %d)\n", ntohs(inaddr.sin_port)));
+        return Trampoline_accept(insock, addr, addrlen);
+    }
+
+
+    // call the actual accept method and return the result.
+    SOCKET outsock = Trampoline_accept(insock, addr, addrlen);
+    if (outsock == INVALID_SOCKET) {
+        DOUT(("Detour_accept: bypassing hook, because accept failed\n"));
+        return outsock;
+    }
+
+    // Build the associated SSL state information around the socket.
+    DOUT(("Detour_accept: attaching SSL onto connection to %s:%d (socket %d)\n",
+          inet_ntoa(inaddr.sin_addr), (int) ntohs(inaddr.sin_port), (int) outsock));
+    SecureTunnel *stun = SecureTunnel::Attach(outsock, *reinterpret_cast<sockaddr_in*>(addr), true);
+    if (!stun) {
+        // We expect Attach() to call WSASetLastError() for us.
+        DOUT(("Detour_accept: failed to attach, closing accepted socket.\n"));
+        Trampoline_closesocket(outsock);
+        return SOCKET_ERROR;
+    }
+
+    // Add the tracking information to our storage container.
+    EnterCriticalSection(&maplock);
+#ifdef USE_MAKEPAIR
+    SecureTunnelMap.insert(std::make_pair(outsock, stun));
+#else
+    SecureTunnelMap.insert(std::pair<const SOCKET, SecureTunnel*>(outsock, stun));
+#endif
+    LeaveCriticalSection(&maplock);
+
+    DOUT(("Detour_accept: successfully accepted and attached to socket %d.\n", outsock));
+
+    return outsock;
+}
 
 
 //! This is our hook that is installed in place of the normal
@@ -643,7 +768,7 @@ static int verify_callback(int preverify_ok, X509_STORE_CTX *ctx)
             // Persist positive confirmation
             PersistAcceptanceForCertificate(&confinfo);
         }
-        stun->bAccepted = true;
+        stun->bCertificateAccepted = true;
         return 1;       // allow connection.
     } else {
         DOUT(("verify_callback rejecting connection\n"));
@@ -653,6 +778,25 @@ static int verify_callback(int preverify_ok, X509_STORE_CTX *ctx)
         return 0;       // reject connection.
     }
 }
+
+//! Return the full pathname that executable is running out of.
+static std::string GetBaseDirectory(void)
+{
+    char buffer[256];
+    if (!GetModuleFileName(NULL, buffer, sizeof(buffer))) {
+        buffer[0] = '\0';
+    }
+    char *slash = strrchr(buffer, '\\');
+    if (slash != NULL) {
+        *(slash + 1) = '\0';
+    } else {
+        buffer[0] = '\0';
+    }
+    return buffer;
+}
+
+#define FileExists(fn)  (GetFileAttributes(fn) != (DWORD) -1L)
+
 
 
 //! initialize the global SSL context.
@@ -665,13 +809,13 @@ static void context_init(void)
     // seed the random number generator.
     RAND_screen();
     if ( !RAND_status() ) {
-        DOUT(("RAND_screen failed to sufficiently seed PRNG"));
+        DOUT(("RAND_screen failed to sufficiently seed PRNG\n"));
     }
 
     // initialize other OpenSSL items.
     SSLeay_add_ssl_algorithms();
     SSL_load_error_strings();
-    g_ctx = SSL_CTX_new(SSLv3_client_method());
+    g_ctx = SSL_CTX_new(SSLv23_method());        // combined server and client method.
     if (!g_ctx) {
         DOUT(("SSL_CTX_new failed to allocate new context\n"));
         return;
@@ -698,6 +842,39 @@ static void context_init(void)
     //   sslerror("SSL_CTX_set_cipher_list");
     //   exit(1);
     //}
+
+
+
+    std::string certfile = GetBaseDirectory().append("stuncert.pem");
+    std::string keyfile = GetBaseDirectory().append("stunkey.pem");
+    DOUT(("certfile = %s\n", certfile.c_str()));
+    DOUT(("keyfile = %s\n", keyfile.c_str()));
+    if (FileExists(certfile.c_str()) && FileExists(keyfile.c_str()))
+    {    
+        // set the local certificate from CertFile
+        if (SSL_CTX_use_certificate_file(g_ctx, certfile.c_str(), SSL_FILETYPE_PEM) != 1) {
+            MessageBox(GetOurParentWindow(), "Failed during loading of certificate file.", "StunTour Certificate Error", MB_OK | MB_ICONERROR);
+        } else {
+            DOUT(("SSL_CTX_use_certificate_file successfully loaded \"%s\"\n", certfile.c_str()));
+        }
+
+        // set the private key from KeyFile
+        if (SSL_CTX_use_PrivateKey_file(g_ctx, keyfile.c_str(), SSL_FILETYPE_PEM) != 1) {
+            MessageBox(GetOurParentWindow(), "Failed during loading of private key.", "StunTour Certificate Error", MB_OK | MB_ICONERROR);
+        } else {
+            DOUT(("SSL_CTX_use_PrivateKey_file successfully loaded \"%s\"\n", keyfile.c_str()));
+        }
+
+        // verify private key.
+        if ( !SSL_CTX_check_private_key(g_ctx) ) {
+            MessageBox(GetOurParentWindow(), "Failed during check of private key against certificate.", "StunTour Certificate Error", MB_OK | MB_ICONERROR);
+        } else {
+            DOUT(("SSL_CTX_check_private_key successfully verified certificate and private key.\n", keyfile.c_str()));
+        }
+    } else {
+        DOUT(("Did not find both a private key a certificate file, so not attempting to load them.\n"));
+    }
+
 }
 
 
@@ -767,6 +944,11 @@ static int PerformStartup(void)
     if (!DetourFunctionWithTrampoline(
                 (PBYTE)Trampoline_recv, (PBYTE)Detour_recv)) {
         DOUT(("stuntour PerformStartup Trampoline_recv failed\n"));
+        return 0;
+    }
+    if (!DetourFunctionWithTrampoline(
+                (PBYTE)Trampoline_accept, (PBYTE)Detour_accept)) {
+        DOUT(("stuntour PerformStartup Trampoline_accept failed\n"));
         return 0;
     }
 

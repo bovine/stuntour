@@ -32,7 +32,7 @@
 
 // Transparent SSL Tunnel hooking.
 // Jeff Lawson <jlawson@bovine.net>
-// $Id: stunrun.cpp,v 1.4 2003/05/18 22:10:47 jlawson Exp $
+// $Id: stunrun.cpp,v 1.5 2003/06/01 23:53:03 jlawson Exp $
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -73,9 +73,10 @@ int main(int argc, char *argv[])
 {
     char szMircFilename[MAX_PATH], szStunTourFilename[MAX_PATH];
     char *filepart;
-    if (!GetFullPathName("mirc.exe", sizeof(szMircFilename), szMircFilename, &filepart) ||
+    if ((!GetFullPathName("mirc.exe", sizeof(szMircFilename), szMircFilename, &filepart) &&
+        !GetFullPathName("mirc32.exe", sizeof(szMircFilename), szMircFilename, &filepart)) ||
         GetFileAttributes(szMircFilename) == -1L) {
-        MessageBox(NULL, "Could not locate MIRC.EXE executable.",
+        MessageBox(NULL, "Could not locate MIRC.EXE or MIRC32.EXE executable.",
                    "Unable to start", MB_OK | MB_ICONERROR);
         return -1;
     }
