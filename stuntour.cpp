@@ -1,6 +1,6 @@
 // Transparent SSL Tunnel hooking.
 // Jeff Lawson <jlawson@bovine.net>
-// $Id: stuntour.cpp,v 1.1 2001/11/19 05:04:29 jlawson Exp $
+// $Id: stuntour.cpp,v 1.2 2002/11/29 04:23:40 jlawson Exp $
 
 /*
  * The implementation of the replacement API wrappers for the send/recv
@@ -65,7 +65,7 @@
 #endif
 
 // Microsoft Detours API hooking headers.
-#include "detours.h"
+#include <detours.h>
 
 
 //! Debug logging macros.
@@ -84,14 +84,28 @@
     #define DOUT(x)   dout_helper x
 #endif
 
+//! Defines the registry location for all of our settings.
+static const char regname_base[] = { "Software\\Bovine Networking Technologies, Inc.\\StunTour" };
 
-//! Defines what destination port number is automatically redirected
+//! Defines what destination port numbers are automatically redirected
 //! through an SSL-tunnel.
-#define INTERCEPTED_PORT      994
-
+static unsigned short intercepted_ports[] = {
+    994,    // standard RFC allocated port for IRCS
+    7000, 7001, 7002, 7003,     // blabber.net and others
+    6657,   // sirc.hu
+    6697,   // axenet
+    9998, 9999,   // suidnet, chatsages
+    6000,   // wondernet
+    25401,
+    0     // terminating entry in list (don't remove).
+};
 
 //! This flag probably will always need to be left on.
 #define PLEASEBLOCK 1
+
+
+//! Define this flag to draw a blue border around mIRC when a secure connection is made.
+//#define SECUREBLUEWINDOW 1
 
 
 //! An internal class constructed for each connection that we are
@@ -134,8 +148,10 @@ static const char sid_ctx[] = "stunnel SID";
 
 
 
-// forward reference
+// forward reference prototypes.
+#ifdef SECUREBLUEWINDOW
 static void SearchAndSubclassWindow(void);
+#endif
 
 
 
@@ -532,12 +548,17 @@ static bool IsInterceptedPort(unsigned short portnum)
     portlist_t InterceptedPortList;
 
     // But for now, we only populate the inception list with the hardcoded default.
-    InterceptedPortList.insert(INTERCEPTED_PORT);
+    InterceptedPortList.insert(INTERCEPTED_PORT1);
+    InterceptedPortList.insert(INTERCEPTED_PORT2);
 
-    portlist_t::iterator iter = InterceptedPortList.find(portnum);
+    portlist_t::const_iterator iter = InterceptedPortList.find(portnum);
     return(iter != InterceptedPortList.end());
 #else
-    return(portnum == INTERCEPTED_PORT);
+    // Check the port in our built-in list of ports to hook.
+    for (int i = 0; intercepted_ports[i] != 0; i++) {
+        if (intercepted_ports[i] == portnum) return true;
+    }
+    return false;
 #endif
 }
 
@@ -547,7 +568,9 @@ static bool IsInterceptedPort(unsigned short portnum)
 static int WINAPI Detour_connect(
         SOCKET insock, const struct sockaddr FAR *name, int namelen)
 {
+#ifdef SECUREBLUEWINDOW
     SearchAndSubclassWindow();
+#endif
 
     // If any of the arguments look bogus, then immediately bail out and
     // just let the original Winsock method handle it.
@@ -858,8 +881,9 @@ BOOL WINAPI DllMain(HINSTANCE hInstDLL, DWORD fdwReason, LPVOID /*lpvReserved*/)
 }
 
 // -----------------------------------
-// mIRC specific things follow...
+// mIRC blue-window painting specific things follow...
 
+#ifdef SECUREBLUEWINDOW
 
 static HWND hwndSavedWindow = NULL;
 static WNDPROC lpfnOldWindowProc = NULL;
@@ -936,58 +960,6 @@ static void ForceNonclientRepaint(HWND hwnd)
 }
 
 
-//! Method exported to mIRC that can be invoked to manually load the library.
-extern "C" int __declspec(dllexport) __stdcall load_stunnel(
-      HWND mWnd, HWND aWnd, char *data, char *parms, BOOL show, BOOL nopause)
-{
-    DOUT(("mIRC callback for load_stunnel invoked\n"));
-    strcpy(data, "/echo -s STunnel transparent hook is installed.");
-
-    if (!lpfnOldWindowProc) {
-        hwndSavedWindow = mWnd;
-        lpfnOldWindowProc = (WNDPROC) GetWindowLong(mWnd, GWL_WNDPROC);
-        SetWindowLong(mWnd, GWL_WNDPROC, (DWORD) Detour_mIRCWindowProc);
-        ForceNonclientRepaint(mWnd);
-    }
-
-    return 2;       // mIRC should execute the command we returned..
-}
-
-//! Internal mIRC structure used to supervise library loading.
-typedef struct {
-    DWORD  mVersion;
-    HWND   mHwnd;
-    BOOL   mKeep;
-} LOADINFO;
-
-//! Method exported to mIRC to indicate that it should leave the library
-//! always loaded, even after execution of the exported method has been run.
-extern "C" void __declspec(dllexport) __stdcall LoadDll(LOADINFO *loadinfo)
-{
-    DOUT(("mIRC callback for LoadDll invoked\n"));
-    loadinfo->mKeep = TRUE;
-}
-
-//! Method exported to mIRC to that it calls before it unloads the library.
-extern "C" int __declspec(dllexport) __stdcall UnloadDll(int mTimeout)
-{
-    DOUT(("mIRC callback for UnloadDll invoked\n"));
-    if (mTimeout == 1) {
-        DOUT(("Instructing mIRC to not automatically unload library because of inactivity.\n"));
-        return 0;       // return 0 to prevent unload, or 1 to allow it.
-    } else {
-
-        // Remove our windowproc subclassing hook.
-        if (lpfnOldWindowProc != NULL) {
-            SetWindowLong(hwndSavedWindow, GWL_WNDPROC, (DWORD) lpfnOldWindowProc);
-            lpfnOldWindowProc = NULL;
-            ForceNonclientRepaint(hwndSavedWindow);
-        }
-
-    }
-    return 1;       // otherwise allow it.
-}
-
 
 static BOOL CALLBACK EnumWindowsProc(
   HWND hwnd,      // handle to parent window
@@ -1022,6 +994,79 @@ static void SearchAndSubclassWindow(void)
         EnumWindows(EnumWindowsProc, 0);
     }
 }
+
+#endif
+
+
+// -----------------------------------
+
+// mIRC plugin specific things follow...
+
+
+//! Method exported to mIRC that can be invoked to manually load the library.
+/*
+ * This doesn't really do anything significant, since simply loading the
+ * library into the process-space will cause the winsock hooks to be installed.
+ */
+extern "C" int __declspec(dllexport) __stdcall load_stunnel(
+      HWND mWnd, HWND aWnd, char *data, char *parms, BOOL show, BOOL nopause)
+{
+    DOUT(("mIRC callback for load_stunnel invoked\n"));
+    strcpy(data, "/echo -s STunnel transparent hook is installed.");
+
+#ifdef SECUREBLUEWINDOW
+    if (!lpfnOldWindowProc) {
+        hwndSavedWindow = mWnd;
+        lpfnOldWindowProc = (WNDPROC) GetWindowLong(mWnd, GWL_WNDPROC);
+        SetWindowLong(mWnd, GWL_WNDPROC, (DWORD) Detour_mIRCWindowProc);
+        ForceNonclientRepaint(mWnd);
+    }
+#endif
+
+    return 2;       // mIRC should execute the command we returned..
+}
+
+//! Internal mIRC structure used to supervise library loading.
+typedef struct {
+    DWORD  mVersion;
+    HWND   mHwnd;
+    BOOL   mKeep;
+} LOADINFO;
+
+//! Method exported to mIRC to indicate that it should leave the library
+//! always loaded, even after execution of the exported method has been run.
+extern "C" void __declspec(dllexport) __stdcall LoadDll(LOADINFO *loadinfo)
+{
+    DOUT(("mIRC callback for LoadDll invoked\n"));
+    loadinfo->mKeep = TRUE;
+}
+
+//! Method exported to mIRC to that it calls before it unloads the library.
+/*
+ * The only thing that this method does is try to disallow mIRC from
+ * unloading our library (and breaking our hooks).
+ */
+extern "C" int __declspec(dllexport) __stdcall UnloadDll(int mTimeout)
+{
+    DOUT(("mIRC callback for UnloadDll invoked\n"));
+    if (mTimeout == 1) {
+        DOUT(("Instructing mIRC to not automatically unload library because of inactivity.\n"));
+        return 0;       // return 0 to prevent unload, or 1 to allow it.
+    } else {
+
+#ifdef SECUREBLUEWINDOW
+        // Remove our windowproc subclassing hook.
+        if (lpfnOldWindowProc != NULL) {
+            SetWindowLong(hwndSavedWindow, GWL_WNDPROC, (DWORD) lpfnOldWindowProc);
+            lpfnOldWindowProc = NULL;
+            ForceNonclientRepaint(hwndSavedWindow);
+        }
+#endif
+
+    }
+    return 1;       // otherwise allow it.
+}
+
 
 // -----------------------------------
 
