@@ -32,7 +32,7 @@
 
 // Transparent SSL Tunnel hooking.
 // Jeff Lawson <jlawson@bovine.net>
-// $Id: stunmirc.cpp,v 1.6 2003/07/20 04:04:04 jlawson Exp $
+// $Id: stunmirc.cpp,v 1.7 2004/01/22 09:07:05 jlawson Exp $
 
 #include "stuntour.h"
 
@@ -138,7 +138,7 @@ LRESULT CALLBACK BlueWindow::SubclassProc(HWND hwnd, UINT uMsg, WPARAM wParam, L
         return lResult;
     } else if (uMsg == WM_DESTROY) {
         // Window is about to be destroyed, so remove the subclassing.
-        SetWindowLong(hwnd, GWL_WNDPROC, (DWORD) lpfnOldWindowProc);
+        SetWindowLongPtr(hwnd, GWL_WNDPROC, PtrToLong(lpfnOldWindowProc));
         OldWindowProcs.erase(hwnd);
         return CallWindowProc(lpfnOldWindowProc, hwnd, uMsg, wParam, lParam);
     } else {
@@ -164,9 +164,9 @@ bool BlueWindow::SubclassNewWindow(HWND hwnd)
         OldWindowProcs.find(hwnd) == OldWindowProcs.end())
     {
         // Found the window that is from our process.  Subclass it.
-        WNDPROC lpfnOldWindowProc = (WNDPROC) GetWindowLong(hwnd, GWL_WNDPROC);
+        WNDPROC lpfnOldWindowProc = (WNDPROC) LongToPtr(GetWindowLongPtr(hwnd, GWL_WNDPROC));
         OldWindowProcs.insert(std::make_pair<HWND, WNDPROC>(hwnd, lpfnOldWindowProc));
-        SetWindowLong(hwnd, GWL_WNDPROC, (DWORD) BlueWindow::SubclassProc);
+        SetWindowLongPtr(hwnd, GWL_WNDPROC, PtrToLong(BlueWindow::SubclassProc));
         ForceNonclientRepaint(hwnd);
         return true;
     }
@@ -180,7 +180,7 @@ void BlueWindow::RemoveSubclassing(void)
     for (hwndprocmap_t::const_iterator lpfnit = OldWindowProcs.begin();
         lpfnit != OldWindowProcs.end(); lpfnit++)
     {
-        SetWindowLong(lpfnit->first, GWL_WNDPROC, (DWORD) lpfnit->second);
+		SetWindowLongPtr(lpfnit->first, GWL_WNDPROC, PtrToLong(lpfnit->second));
         ForceNonclientRepaint(lpfnit->first);
     }
     OldWindowProcs.clear();
@@ -318,7 +318,7 @@ extern "C" int __declspec(dllexport) __stdcall blue_window(
     DOUT(("mIRC callback for blue_window invoked\n"));
 
     if (data != NULL) {
-        HWND hwnd = (HWND) atoi(data);
+		HWND hwnd = (HWND) LongToHandle(atoi(data));
         bool bResult = BlueWindow::SubclassNewWindow(hwnd);
         if (bResult) {
             DOUT(("blue_window successfully subclassed new window %p\n", (void*) hwnd));
