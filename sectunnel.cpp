@@ -32,7 +32,7 @@
 
 // Transparent SSL Tunnel hooking.
 // Jeff Lawson <jlawson@bovine.net>
-// $Id: sectunnel.cpp,v 1.3 2003/06/01 23:53:03 jlawson Exp $
+// $Id: sectunnel.cpp,v 1.4 2003/07/20 04:00:21 jlawson Exp $
 
 // Our private header
 #include "stuntour.h"
@@ -217,7 +217,7 @@ std::string SecureTunnel::GetAddressAndPort() const
  * \param len Indicates the number of bytes to send.
  * \return Returns -1 on error, otherwise the number of bytes sent.
  *      Will never successfully return a value that is fewer than the
- *      argument 'len' requested.
+ *      argument 'len' requested (Note: Winsock send() doesn't guarantee that).
  */
 int SecureTunnel::Send(const char FAR *buf, int len)
 {
