@@ -38,11 +38,14 @@
 			with Windows 2000 and Windows XP machines.&nbsp; It will not work on Windows 
 			95, Windows 98, or Windows Me.</P>
 		<h2>How do I load it?</h2>
-		<ol>
+		<OL>
 			<li>
-				You can run the STUNRUN.EXE helper utility.
-				<p>This causes mIRC to be automatically launched with the DLL pre-loaded. You 
-					should ensure that mIRC is not already running when you do this.</p>
+				You can run the STUNRUN.EXE helper utility instead of MIRC.EXE when you want to 
+				start mIRC. This is the easiest and the recommended&nbsp;method.&nbsp; This 
+				causes mIRC to be automatically launched with the DLL pre-loaded. You should 
+				ensure that mIRC is not already running when you do this.
+				<pre>
+	STUNRUN.EXE</pre>
 			<li>
 				You can start MIRC.EXE as you normally would, but load the DLL manually in mIRC 
 				with the command (before you connect):
@@ -60,7 +63,7 @@
 					those commands are run <i>after</i> mIRC successfully connects to the server.
 				</p>
 			</li>
-		</ol>
+		</OL>
 		<p>
 			If you use the manual loading techniques (methods 2 or 3) and want to unload 
 			the library hooks manually for some reason without having to exit mIRC, use the 
@@ -143,8 +146,8 @@
 				certain port numbers.
 				<UL>
 					<LI>
-					You should use REGEDIT (Registry Editor) to navigate to this location:&nbsp; 
-					HKEY_CURRENT_USER\Software\Bovine Networking Technologies, Inc.\StunTour
+						You should use REGEDIT (Registry Editor) to navigate to this location:&nbsp; <kbd>HKEY_CURRENT_USER\Software\Bovine 
+							Networking Technologies, Inc.\StunTour</kbd>
 					<LI>
 					Edit the MULTI-SZ value named "Ports" and add any additional port numbers 
 					there.
@@ -157,9 +160,18 @@
 			</LI>
 		</OL>
 		<H2>How can I always accept SSL certificate confirmation prompts?</H2>
-		<P>A future version of StunTour will permit this.&nbsp; Until then, you will have 
-			to manually click "Yes" each time you restart mIRC/StunTour and connect to a 
-			SSL server.</P>
+		<p>Each time you connect to an IRC server over SSL, StunTour displays a 
+			confirmation dialog that includes details about the server's certificate, the 
+			issuer of the certificate, the address of the server, and other pre-validation 
+			information.&nbsp;If you ensure that the "remember this decision" checkbox is 
+			checked before clicking the "Yes" button, StunTour will no longer prompt you 
+			for connections made to a server utilizing that certificate.</p>
+		<p>Alternatively, you can disable confirmation dialogs for all certificates by 
+			using REGEDIT (Registry Editor) to navigate to this location:&nbsp; <kbd>HKEY_CURRENT_USER\Software\Bovine 
+				Networking Technologies, Inc.\StunTour</kbd>; then change the DWORD value 
+			"AlwaysAllowAnyCert" to be non-zero. Understand that doing this is insecure 
+			since it can allow "man-in-the-middle" attacks to intercept the connection 
+			establishment and use an alternate certificate without you noticing.</p>
 		<H2>Why is it named "StunTour"?</H2>
 		<p>The name is simply a shortened contraction of "SSL tunnel detour". The word 
 			"detour" is simply the name of the API hooking library that I'm using to 

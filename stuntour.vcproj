@@ -144,6 +144,9 @@
 			Name="Resource Files"
 			Filter="rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe">
 			<File
+				RelativePath="ico110.ico">
+			</File>
+			<File
 				RelativePath="stuntour.rc">
 			</File>
 		</Filter>
