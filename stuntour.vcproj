@@ -33,7 +33,8 @@
 				Name="VCCustomBuildTool"/>
 			<Tool
 				Name="VCLinkerTool"
-				AdditionalOptions="wsock32.lib advapi32.lib /export:LoadDll /export:UnloadDll /export:load_stunnel /export:hook_ports"
+				AdditionalOptions="/export:LoadDll /export:UnloadDll /export:load_stunnel /export:hook_ports"
+				AdditionalDependencies="wsock32.lib"
 				OutputFile="$(OutDir)/stuntour.dll"
 				LinkIncremental="1"
 				IgnoreDefaultLibraryNames="libcmt"
@@ -82,7 +83,8 @@
 				Name="VCCustomBuildTool"/>
 			<Tool
 				Name="VCLinkerTool"
-				AdditionalOptions="wsock32.lib advapi32.lib /export:LoadDll /export:UnloadDll /export:load_stunnel"
+				AdditionalOptions="/export:LoadDll /export:UnloadDll /export:load_stunnel /export:hook_ports"
+				AdditionalDependencies="wsock32.lib"
 				OutputFile="$(OutDir)/stuntour.dll"
 				LinkIncremental="1"
 				IgnoreDefaultLibraryNames="msvcrt"
