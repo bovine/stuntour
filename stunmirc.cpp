@@ -1,6 +1,6 @@
 // Transparent SSL Tunnel hooking.
 // Jeff Lawson <jlawson@bovine.net>
-// $Id: stunmirc.cpp,v 1.1 2003/02/03 06:34:16 jlawson Exp $
+// $Id: stunmirc.cpp,v 1.2 2003/05/18 21:35:08 jlawson Exp $
 
 #include "stuntour.h"
 
@@ -87,14 +87,15 @@ static void ForceNonclientRepaint(HWND hwnd)
 
 
 
-static BOOL CALLBACK EnumWindowsProc(
+static BOOL CALLBACK SASWEnumWindowsProc(
   HWND hwnd,      // handle to parent window
   LPARAM lParam   // application-defined value
 )
 {
     char szClassName[64];
     if (GetClassName(hwnd, szClassName, sizeof(szClassName)) &&
-        strcmp(szClassName, "mIRC32") == 0)
+        (strcmp(szClassName, "mIRC32") == 0 || strcmp(szClassName, "mIRC") == 0)
+        )
     {
         DWORD windowpid;
         GetWindowThreadProcessId(hwnd, &windowpid);
@@ -117,12 +118,42 @@ static BOOL CALLBACK EnumWindowsProc(
 void SearchAndSubclassWindow(void)
 {
     if (!lpfnOldWindowProc) {
-        EnumWindows(EnumWindowsProc, 0);
+        EnumWindows(SASWEnumWindowsProc, 0);
     }
 }
 
 #endif
 
+// -----------------------------------
+
+static BOOL CALLBACK GOPWEnumWindowsProc(
+  HWND hwnd,      // handle to parent window
+  LPARAM lParam   // application-defined value
+)
+{
+    char szClassName[64];
+    if ( GetClassName(hwnd, szClassName, sizeof(szClassName)) &&
+        (strcmp(szClassName, "mIRC32") == 0 || strcmp(szClassName, "mIRC") == 0)
+        )
+    {
+        DWORD windowpid;
+        GetWindowThreadProcessId(hwnd, &windowpid);
+        if (windowpid == GetCurrentProcessId()) {
+            // Found the window that is from our process.
+            *reinterpret_cast<HWND*>(lParam) = hwnd;
+            return FALSE;       // done enumerating.
+        }
+    }
+    return TRUE;        // continue enumerating.
+}
+
+HWND GetOurParentWindow(void)
+{
+    HWND hWnd = NULL;
+    EnumWindows(GOPWEnumWindowsProc, (LPARAM) &hWnd);
+    DOUT(("GetOurParentWindow: found hwnd %p\n", hWnd));
+    return hWnd;
+}
 
 // -----------------------------------
 
