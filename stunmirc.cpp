@@ -32,41 +32,71 @@
 
 // Transparent SSL Tunnel hooking.
 // Jeff Lawson <jlawson@bovine.net>
-// $Id: stunmirc.cpp,v 1.4 2003/06/01 23:53:03 jlawson Exp $
+// $Id: stunmirc.cpp,v 1.5 2003/07/20 03:10:19 jlawson Exp $
 
 #include "stuntour.h"
 
 
 
 // -----------------------------------
-// mIRC blue-window painting specific things follow...
 
-#ifdef SECUREBLUEWINDOW
+namespace BlueWindow {
 
-static HWND hwndSavedWindow = NULL;
-static WNDPROC lpfnOldWindowProc = NULL;
+    typedef std::map<HWND, WNDPROC> hwndprocmap_t;
+    
+    //! List of all windows that are currently subclassed.
+    static hwndprocmap_t OldWindowProcs;
 
+    //! New window proc used for subclassing.
+    static LRESULT CALLBACK SubclassProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
-static LRESULT CALLBACK Detour_mIRCWindowProc(
-  HWND hwnd,      // handle to window
-  UINT uMsg,      // message identifier
-  WPARAM wParam,  // first message parameter
-  LPARAM lParam   // second message parameter
-)
+    //! Method to force a window to be repainted.
+    static void ForceNonclientRepaint(HWND hwnd);
+
+    //! Entrypoint used to make another window become subclassed.
+    bool SubclassNewWindow(HWND hwnd);
+
+    //! Disables all active blue-window subclassing.
+    void RemoveSubclassing(void);
+};
+
+//! Window procedure to add blue borders to windows via subclassing.
+/*!
+ * \param hwnd handle to window
+ * \param uMsg message identifier
+ * \param wParam first message parameter
+ * \param lParam second message parameter
+ */
+LRESULT CALLBACK BlueWindow::SubclassProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
+    // Obtain the original window procedure, before subclassing.
+    WNDPROC lpfnOldWindowProc = NULL;
+    hwndprocmap_t::const_iterator lpfnit = OldWindowProcs.find(hwnd);
+    if (lpfnit != OldWindowProcs.end()) {
+        lpfnOldWindowProc = lpfnit->second;
+    } else {
+        DOUT(("BlueWindow::SubclassProc called for unknown window %p. Ignoring.\n", (void*) hwnd));
+        return DefWindowProc(hwnd, uMsg, wParam, lParam);
+    }
+
+    // Start handling the special messages.
     if (uMsg == WM_NCPAINT) {
         // First let the original method do its work.
         LRESULT lResult = CallWindowProc(lpfnOldWindowProc, hwnd, uMsg, wParam, lParam);
 
         // Now overpaint the border with a blue line.
         HDC hdc = GetDCEx(hwnd, (HRGN)wParam, DCX_WINDOW|DCX_INTERSECTRGN);
+        if (!hdc) {
+            // If GetDCEx() failed, then try again with just GetWindowDC().
+            hdc = GetWindowDC(hwnd);
+        }
         if (hdc) {
             RECT windowrect, workrect;
             GetWindowRect(hwnd, &windowrect);
 
             HBRUSH hBlueBrush = CreateSolidBrush(RGB(0,0,255));
-            int framewidth = GetSystemMetrics(SM_CXSIZEFRAME);
-            int frameheight = GetSystemMetrics(SM_CYSIZEFRAME);
+            const int framewidth = GetSystemMetrics(SM_CXSIZEFRAME);
+            const int frameheight = GetSystemMetrics(SM_CYSIZEFRAME);
 
             // draw the top border.
             workrect.top = 0;
@@ -106,91 +136,101 @@ static LRESULT CALLBACK Detour_mIRCWindowProc(
 
         // Return the original result code.
         return lResult;
+    } else if (uMsg == WM_DESTROY) {
+        // Window is about to be destroyed, so remove the subclassing.
+        SetWindowLong(hwnd, GWL_WNDPROC, (DWORD) lpfnOldWindowProc);
+        OldWindowProcs.erase(hwnd);
+        return CallWindowProc(lpfnOldWindowProc, hwnd, uMsg, wParam, lParam);
     } else {
+        // Otherwise let the normal window proc handle it.
         return CallWindowProc(lpfnOldWindowProc, hwnd, uMsg, wParam, lParam);
     }
 }
 
-
-static void ForceNonclientRepaint(HWND hwnd)
+//! Forces a window to be fully repainted.
+inline void BlueWindow::ForceNonclientRepaint(HWND hwnd)
 {
     RedrawWindow(hwnd, NULL, NULL, RDW_FRAME | RDW_INVALIDATE | RDW_NOINTERNALPAINT | RDW_ERASENOW);
 }
 
-
-
-static BOOL CALLBACK SASWEnumWindowsProc(
-  HWND hwnd,      // handle to parent window
-  LPARAM lParam   // application-defined value
-)
+//! Entrypoint used to make another window become subclassed.
+bool BlueWindow::SubclassNewWindow(HWND hwnd)
 {
-    char szClassName[64];
-    if (GetClassName(hwnd, szClassName, sizeof(szClassName)) &&
-        (strcmp(szClassName, "mIRC32") == 0 || strcmp(szClassName, "mIRC") == 0)
-        )
+    DWORD windowpid;
+    
+    if (hwnd != NULL && IsWindow(hwnd) && 
+        GetWindowThreadProcessId(hwnd, &windowpid) && 
+        windowpid == GetCurrentProcessId() &&
+        OldWindowProcs.find(hwnd) == OldWindowProcs.end())
     {
-        DWORD windowpid;
-        GetWindowThreadProcessId(hwnd, &windowpid);
-        if (windowpid == GetCurrentProcessId()) {
-            // Found the window that is from our process.  Subclass it.
-
-            if (!lpfnOldWindowProc) {
-                hwndSavedWindow = hwnd;
-                lpfnOldWindowProc = (WNDPROC) GetWindowLong(hwnd, GWL_WNDPROC);
-                SetWindowLong(hwnd, GWL_WNDPROC, (DWORD) Detour_mIRCWindowProc);
-                ForceNonclientRepaint(hwnd);
-            }
-
-            return FALSE;       // done enumerating.
-        }
+        // Found the window that is from our process.  Subclass it.
+        WNDPROC lpfnOldWindowProc = (WNDPROC) GetWindowLong(hwnd, GWL_WNDPROC);
+        OldWindowProcs.insert(std::make_pair<HWND, WNDPROC>(hwnd, lpfnOldWindowProc));
+        SetWindowLong(hwnd, GWL_WNDPROC, (DWORD) BlueWindow::SubclassProc);
+        ForceNonclientRepaint(hwnd);
+        return true;
     }
-    return TRUE;        // continue enumerating.
+
+    return false;       // could not successfully subclass specified window.
 }
 
-void SearchAndSubclassWindow(void)
+//! Removes subclassing from all windows.
+void BlueWindow::RemoveSubclassing(void)
 {
-    if (!lpfnOldWindowProc) {
-        EnumWindows(SASWEnumWindowsProc, 0);
+    for (hwndprocmap_t::const_iterator lpfnit = OldWindowProcs.begin();
+        lpfnit != OldWindowProcs.end(); lpfnit++)
+    {
+        SetWindowLong(lpfnit->first, GWL_WNDPROC, (DWORD) lpfnit->second);
+        ForceNonclientRepaint(lpfnit->first);
     }
+    OldWindowProcs.clear();
 }
 
-#endif
 
 // -----------------------------------
 
-static BOOL CALLBACK GOPWEnumWindowsProc(
-  HWND hwnd,      // handle to parent window
-  LPARAM lParam   // application-defined value
-)
-{
-    char szClassName[64];
-    if ( GetClassName(hwnd, szClassName, sizeof(szClassName)) &&
-        (strcmp(szClassName, "mIRC32") == 0 || strcmp(szClassName, "mIRC") == 0)
-        )
-    {
-        DWORD windowpid;
-        GetWindowThreadProcessId(hwnd, &windowpid);
-        if (windowpid == GetCurrentProcessId()) {
-            // Found the window that is from our process.
-            *reinterpret_cast<HWND*>(lParam) = hwnd;
-            return FALSE;       // done enumerating.
-        }
-    }
-    return TRUE;        // continue enumerating.
-}
-
+//! Identifies the HWND of the main application window of the mIRC instance 
+//! that is executing this DLL.
+/*!
+ * \return The HWND of the main application window, if it can be identified.
+ *      Otherwise NULL is returned.
+ */
 HWND GetOurParentWindow(void)
 {
+    //! Silly nested class so that we can define a local function.
+    class foo {
+        foo() {};
+    public:
+        static BOOL CALLBACK GOPWEnumWindowsProc(
+                HWND hwnd,      //!< handle to parent window
+                LPARAM lParam   //!< application-defined value
+        )
+        {
+            char szClassName[64];
+            if ( GetClassName(hwnd, szClassName, sizeof(szClassName)) &&
+                (strcmp(szClassName, "mIRC32") == 0 || strcmp(szClassName, "mIRC") == 0)
+                )
+            {
+                DWORD windowpid;
+                GetWindowThreadProcessId(hwnd, &windowpid);
+                if (windowpid == GetCurrentProcessId()) {
+                    // Found the window that is from our process.
+                    *reinterpret_cast<HWND*>(lParam) = hwnd;
+                    return FALSE;       // done enumerating.
+                }
+            }
+            return TRUE;        // continue enumerating.
+        }
+    };
+
+    // Actually do the enumeration call.
     HWND hWnd = NULL;
-    EnumWindows(GOPWEnumWindowsProc, (LPARAM) &hWnd);
+    EnumWindows(foo::GOPWEnumWindowsProc, (LPARAM) &hWnd);
     DOUT(("GetOurParentWindow: found hwnd %p\n", hWnd));
     return hWnd;
 }
 
 // -----------------------------------
-
-// mIRC plugin specific things follow...
-
 
 //! Method exported to mIRC that can be invoked to manually load the library.
 /*
@@ -203,13 +243,9 @@ extern "C" int __declspec(dllexport) __stdcall load_stunnel(
     DOUT(("mIRC callback for load_stunnel invoked\n"));
     strcpy(data, "/echo -s StunTour transparent SSL hook is installed. http://www.bovine.net/~jlawson/coding/stuntour/");
 
-#ifdef SECUREBLUEWINDOW
-    if (!lpfnOldWindowProc) {
-        hwndSavedWindow = mWnd;
-        lpfnOldWindowProc = (WNDPROC) GetWindowLong(mWnd, GWL_WNDPROC);
-        SetWindowLong(mWnd, GWL_WNDPROC, (DWORD) Detour_mIRCWindowProc);
-        ForceNonclientRepaint(mWnd);
-    }
+#if 0
+    // Make the entire main mIRC application window have a blue border.
+    BlueWindow::SubclassNewWindow(mWnd);
 #endif
 
     return 2;       // mIRC should execute the command we returned..
@@ -242,16 +278,8 @@ extern "C" int __declspec(dllexport) __stdcall UnloadDll(int mTimeout)
         DOUT(("Instructing mIRC to not automatically unload library because of inactivity.\n"));
         return 0;       // return 0 to prevent unload, or 1 to allow it.
     } else {
-
-#ifdef SECUREBLUEWINDOW
-        // Remove our windowproc subclassing hook.
-        if (lpfnOldWindowProc != NULL) {
-            SetWindowLong(hwndSavedWindow, GWL_WNDPROC, (DWORD) lpfnOldWindowProc);
-            lpfnOldWindowProc = NULL;
-            ForceNonclientRepaint(hwndSavedWindow);
-        }
-#endif
-
+        // Remove our windowproc subclassing hooks.
+        BlueWindow::RemoveSubclassing();
     }
     return 1;       // otherwise allow it.
 }
@@ -281,3 +309,24 @@ extern "C" int __declspec(dllexport) __stdcall hook_ports(
 
     return 2;       // mIRC should execute the command we returned..
 }
+
+//! Method exported to mIRC that can be invoked to subclass a specified 
+//! window (by hwnd) and make its window frame blue.
+extern "C" int __declspec(dllexport) __stdcall blue_window(
+      HWND mWnd, HWND aWnd, char *data, char *parms, BOOL show, BOOL nopause)
+{
+    DOUT(("mIRC callback for blue_window invoked\n"));
+
+    if (data != NULL) {
+        HWND hwnd = (HWND) atoi(data);
+        bool bResult = BlueWindow::SubclassNewWindow(hwnd);
+        if (bResult) {
+            DOUT(("blue_window successfully subclassed new window %p\n", (void*) hwnd));
+        } else {
+            DOUT(("blue_window failed to subclass new window.\n"));
+        }
+    }
+
+    return 1;       // mIRC should just continue executing.
+}
+
