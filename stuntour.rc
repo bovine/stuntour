@@ -93,21 +93,22 @@ END
 //
 
 IDD_CONFIRM DIALOGEX 0, 0, 225, 138
-STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | 
+STYLE DS_SETFONT | DS_MODALFRAME | DS_NOIDLEMSG | DS_SETFOREGROUND | 
+    DS_3DLOOK | DS_FIXEDSYS | DS_CENTER | WS_POPUP | WS_VISIBLE | WS_CAPTION | 
     WS_SYSMENU
 CAPTION "StunTour SSL Security Confirmation"
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
-    DEFPUSHBUTTON   "Yes",IDYES,59,117,50,14
-    PUSHBUTTON      "No",IDNO,131,117,50,14
-    CONTROL         "Remember this decision for this server",
+    DEFPUSHBUTTON   "&Yes",IDYES,59,117,50,14
+    PUSHBUTTON      "&No",IDNO,131,117,50,14
+    CONTROL         "&Remember this decision for this server.",
                     IDC_CHECKREMEMBER,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,
                     36,96,182,10
-    LTEXT           "Do you want to allow a network connection to be established to the following server?",
+    LTEXT           "Do you want to continue establishing a connection to the following network server?",
                     IDC_STATIC,36,7,182,21
     EDITTEXT        IDC_SERVERDETAILS,36,35,182,52,ES_MULTILINE | 
                     ES_READONLY | WS_VSCROLL
-    ICON            110,IDC_STATIC,7,7,21,20
+    ICON            110,IDC_STATIC,7,7,20,20
 END
 
 
