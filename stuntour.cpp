@@ -32,7 +32,7 @@
 
 // Transparent SSL Tunnel hooking.
 // Jeff Lawson <jlawson@bovine.net>
-// $Id: stuntour.cpp,v 1.8 2003/07/20 05:32:26 jlawson Exp $
+// $Id: stuntour.cpp,v 1.9 2004/01/22 09:08:23 jlawson Exp $
 
 /*
  * The implementation of the replacement API wrappers for the send/recv
@@ -780,7 +780,7 @@ static int WINAPI Detour_send(
                     // intercept the port and change the command to a normal DCC CHAT.
                     AddInterceptedPort(atoi(portnum.c_str()), true);
                     buffer.insert(schatstart, 1, 'S');   // insert an "S" so that "CHAT" becomes "SCHAT"
-                    eolpos--;   // one char shorter now.                  
+                    eolpos++;   // one char longer now.                  
                     bufferchanged = true;
                 } 
                 
