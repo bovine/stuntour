@@ -1,6 +1,6 @@
 // Transparent SSL Tunnel hooking.
 // Jeff Lawson <jlawson@bovine.net>
-// $Id: stunrun.cpp,v 1.1 2001/11/19 05:04:29 jlawson Exp $
+// $Id: stunrun.cpp,v 1.2 2002/07/10 17:52:59 jlawson Exp $
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -39,13 +39,30 @@
 //! Startup entry-point.
 int main(int argc, char *argv[])
 {
+    char szMircFilename[MAX_PATH], szStunTourFilename[MAX_PATH];
+    char *filepart;
+    if (!GetFullPathName("mirc.exe", sizeof(szMircFilename), szMircFilename, &filepart) ||
+        GetFileAttributes(szMircFilename) == -1L) {
+        MessageBox(NULL, "Could not locate MIRC.EXE executable.",
+                   "Unable to start", MB_OK | MB_ICONERROR);
+        return -1;
+    }
+    if (!GetFullPathName("stuntour.dll", sizeof(szStunTourFilename), szStunTourFilename, &filepart) ||
+        GetFileAttributes(szMircFilename) == -1L) {
+        MessageBox(NULL, "Could not locate STUNTOUR.DLL interception library.",
+                   "Unable to start", MB_OK | MB_ICONERROR);
+        return -1;
+    }
+
+
+
     STARTUPINFO si;
     PROCESS_INFORMATION pi;
 
     memset(&si, 0, sizeof(STARTUPINFO));
     memset(&pi, 0, sizeof(PROCESS_INFORMATION));
     si.cb = sizeof(STARTUPINFO);
-    if (!DetourCreateProcessWithDllA("mirc32.exe",
+    if (!DetourCreateProcessWithDllA(szMircFilename,
                                         NULL,
                                         NULL,
                                         NULL,
@@ -55,11 +72,11 @@ int main(int argc, char *argv[])
                                         NULL,
                                         &si,
                                         &pi,
-                                        "stuntour.dll",
+                                        szStunTourFilename,
                                         NULL))
     {
         MessageBox(NULL, "Unable to launch mIRC with an injected library.",
-                   "Error", MB_OK | MB_ICONERROR);
+                   "Unable to start", MB_OK | MB_ICONERROR);
         return 1;
     }
     return 0;
