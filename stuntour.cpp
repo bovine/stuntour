@@ -32,7 +32,7 @@
 
 // Transparent SSL Tunnel hooking.
 // Jeff Lawson <jlawson@bovine.net>
-// $Id: stuntour.cpp,v 1.7 2003/07/20 04:04:04 jlawson Exp $
+// $Id: stuntour.cpp,v 1.8 2003/07/20 05:32:26 jlawson Exp $
 
 /*
  * The implementation of the replacement API wrappers for the send/recv
@@ -74,6 +74,9 @@ static unsigned short intercepted_ports[128] = {
     7000, 7001, 7002, 7003,     // blabber.net and others
     6657,   // sirc.hu
     6697,   // axenet
+    6699,   // IRC.P2PChat.NET 
+    7032,   // irc.irdsi.net
+    6670,   // NexusIRC
     9998, 9999,   // suidnet, chatsages
     6999,   // biteme-irc
     6000,   // wondernet
