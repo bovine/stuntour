@@ -2,17 +2,27 @@
 /* WARNING: Generated automatically from opensslconf.h.in by Configure. */
 
 /* OpenSSL was configured with the following options: */
+#ifndef OPENSSL_SYSNAME_WIN32
+# define OPENSSL_SYSNAME_WIN32
+#endif
+#ifndef OPENSSL_DOING_MAKEDEPEND
+
+#ifndef OPENSSL_NO_KRB5
+# define OPENSSL_NO_KRB5
+#endif
+
+#endif /* OPENSSL_DOING_MAKEDEPEND */
+#ifndef OPENSSL_THREADS
+# define OPENSSL_THREADS
+#endif
+
+/* The OPENSSL_NO_* macros are also defined as NO_* if the application
+   asks for it.  This is a transient feature that is provided for those
+   who haven't had the time to do the appropriate changes in their
+   applications.  */
 #ifdef OPENSSL_ALGORITHM_DEFINES
-   /* no ciphers excluded */
-#endif
-#ifdef OPENSSL_THREAD_DEFINES
-# ifndef THREADS
-#  define THREADS
-# endif
-#endif
-#ifdef OPENSSL_OTHER_DEFINES
-# ifndef DSO_WIN32
-#  define DSO_WIN32
+# if defined(OPENSSL_NO_KRB5) && !defined(NO_KRB5)
+#  define NO_KRB5
 # endif
 #endif
 
@@ -27,7 +37,11 @@
 #endif
 #endif
 
+#undef OPENSSL_UNISTD
 #define OPENSSL_UNISTD <unistd.h>
+
+#undef OPENSSL_EXPORT_VAR_AS_FUNCTION
+#define OPENSSL_EXPORT_VAR_AS_FUNCTION
 
 #if defined(HEADER_IDEA_H) && !defined(IDEA_INT)
 #define IDEA_INT unsigned int
@@ -62,7 +76,7 @@
 #endif
 #endif
 
-#if defined(HEADER_DES_H) && !defined(DES_LONG)
+#if (defined(HEADER_NEW_DES_H) || defined(HEADER_DES_H)) && !defined(DES_LONG)
 /* If this is set to 'unsigned int' on a DEC Alpha, this gives about a
  * %20 speed up (longs are 8 bytes, int's are 4). */
 #ifndef DES_LONG
@@ -162,7 +176,7 @@ YOU SHOULD NOT HAVE BOTH DES_RISC1 AND DES_RISC2 DEFINED!!!!!
 #  define DES_PTR
 #  define DES_RISC2
 #  define DES_UNROLL
-#elif defined( i386 )		/* x86 boxes, should be gcc */
+#elif defined(i386) || defined(__i386__)	/* x86 boxes, should be gcc */
 #  define DES_PTR
 #  define DES_RISC1
 #  define DES_UNROLL
