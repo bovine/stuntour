@@ -33,7 +33,7 @@
 				Name="VCCustomBuildTool"/>
 			<Tool
 				Name="VCLinkerTool"
-				AdditionalOptions="/export:LoadDll /export:UnloadDll /export:load_stunnel /export:hook_ports /export:blue_window"
+				AdditionalOptions="/export:LoadDll /export:UnloadDll /export:load_stunnel /export:hook_ports /export:blue_window /export:secure_dcc_chat"
 				AdditionalDependencies="wsock32.lib"
 				OutputFile="$(OutDir)/stuntour.dll"
 				LinkIncremental="1"
@@ -83,7 +83,7 @@
 				Name="VCCustomBuildTool"/>
 			<Tool
 				Name="VCLinkerTool"
-				AdditionalOptions="/export:LoadDll /export:UnloadDll /export:load_stunnel /export:hook_ports /export:blue_window"
+				AdditionalOptions="/export:LoadDll /export:UnloadDll /export:load_stunnel /export:hook_ports /export:blue_window /export:secure_dcc_chat"
 				AdditionalDependencies="wsock32.lib"
 				OutputFile="$(OutDir)/stuntour.dll"
 				LinkIncremental="1"

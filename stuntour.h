@@ -32,7 +32,7 @@
 
 // Transparent SSL Tunnel hooking.
 // Jeff Lawson <jlawson@bovine.net>
-// $Id: stuntour.h,v 1.4 2003/06/01 23:53:03 jlawson Exp $
+// $Id: stuntour.h,v 1.5 2003/07/20 04:04:04 jlawson Exp $
 
 #ifndef STUNTOUR_H__
 #define STUNTOUR_H__
@@ -77,15 +77,17 @@
 
 //-----------------------------
 
-//! This flag probably will always need to be left on until experimental 
-//! portions of the code are made fully operational.
+//! This flag is a remnant of the old networking implementation that relied
+//! heavily on the use of blocking sockets.  Leave it undefined, unless you
+//! really want to use the old, deprecated behavior.
 //#define PLEASEBLOCK 1
-
-//! Define this flag to draw a blue border around mIRC when a secure connection is made.
-//#define SECUREBLUEWINDOW 1
 
 //! Defined to the registry key base for storage of local settings.
 #define REGKEYBASE  "Software\\Bovine Networking Technologies, Inc.\\StunTour"
+
+//! Define if you want to enable the experimental "DCC CHAT" to "DCC SCHAT"
+//! interception.
+#define HOOK_DCC_SCHAT 1
 
 //-----------------------------
 
@@ -184,7 +186,6 @@ const char *TranslateX509Error(int errorcode);
 const char *TranslateWinsockError(int errorcode);
 
 // mIRC specific functions.
-void SearchAndSubclassWindow(void);
 HWND GetOurParentWindow(void);
 
 // port interception list functions.
@@ -200,6 +201,7 @@ void PersistAcceptanceForCertificate(ConfirmationDialogData *confinfo);
 //! shared globals.
 extern SSL_CTX *g_ctx;
 extern int g_stunrefidx;
+extern bool g_bSecureOutgoingDccChat;
 extern const char g_sid_ctx[];
 extern HINSTANCE g_hInstance;
 

@@ -32,7 +32,7 @@
 
 // Transparent SSL Tunnel hooking.
 // Jeff Lawson <jlawson@bovine.net>
-// $Id: stunmirc.cpp,v 1.5 2003/07/20 03:10:19 jlawson Exp $
+// $Id: stunmirc.cpp,v 1.6 2003/07/20 04:04:04 jlawson Exp $
 
 #include "stuntour.h"
 
@@ -328,5 +328,26 @@ extern "C" int __declspec(dllexport) __stdcall blue_window(
     }
 
     return 1;       // mIRC should just continue executing.
+}
+
+
+//! Method exported to mIRC that can be invoked to add interception for a port number.
+/*
+ * This displays a list of all sockets that are being relayed or adds additional ports.
+ */
+extern "C" int __declspec(dllexport) __stdcall secure_dcc_chat(
+      HWND mWnd, HWND aWnd, char *data, char *parms, BOOL show, BOOL nopause)
+{
+    DOUT(("mIRC callback for secure_dcc_chat invoked\n"));
+
+#ifdef HOOK_DCC_SCHAT
+    g_bSecureOutgoingDccChat = true;
+
+    strcpy(data, "/echo -s StunTour will convert the next DCC CHAT into a DCC SCHAT");
+#else
+    strcpy(data, "/echo -s StunTour was not compiled with HOOK_DCC_SCHAT enabled");
+#endif
+
+    return 2;       // mIRC should execute the command we returned..
 }
 

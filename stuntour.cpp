@@ -32,7 +32,7 @@
 
 // Transparent SSL Tunnel hooking.
 // Jeff Lawson <jlawson@bovine.net>
-// $Id: stuntour.cpp,v 1.6 2003/06/01 23:53:03 jlawson Exp $
+// $Id: stuntour.cpp,v 1.7 2003/07/20 04:04:04 jlawson Exp $
 
 /*
  * The implementation of the replacement API wrappers for the send/recv
@@ -86,6 +86,12 @@ static unsigned short intercepted_ports[128] = {
 static unsigned short oneshot_intercepted_ports[128] = {
     0     // terminating entry in list (don't remove).
 };
+
+
+#ifdef HOOK_DCC_SCHAT
+//! Indicates whether the next outgoing DCC CHAT should be intercepted.
+bool g_bSecureOutgoingDccChat = false;
+#endif
 
 
 //! Global mutex variables to allow thread-safe access to the map.
@@ -447,16 +453,77 @@ static void InitializeInterceptedPortList(void)
 }
 
 
+//! Walks through a string and copies out the next token from it.
+/*!
+ * \param input Input string that should be tokenized.
+ * \param token Character to be used as a separator character.
+ * \param startpos Reference to the current position within the string.
+ *      On first call to this function, this variable should be zero.
+ *      On return, this value is updated to the position of the start of
+ *      the next token.
+ * \param endpos Indicates the maximum position (stopping point) within the 
+ *      input string.  This allows the input string to be treated as if it
+ *      were truncated, without actualling having to do so.  This may be
+ *      zero if you want the entire input string to be considered.
+ * \param output Reference to a string that should receive the extracted
+ *      token on success.
+ * \param bSqueezeMultipleSeparators If true, the multiple instances of the
+ *      separator character are found in a row, then it is treated the same
+ *      as if only one were present (defaults to true)
+ * \return false if there are no more tokens to parse.
+ */
+static bool SplitNextToken(
+    const std::string &input, char separator, int &startpos, int endpos, 
+    std::string &output, bool bSqueezeMultipleSeparators = true)
+{
+    if (startpos < 0 || startpos >= (int) input.size()) {
+        output.erase();
+        return false;
+    }
+    if (endpos == std::string::npos || endpos < 0 || endpos >= (int) input.size()) {
+        endpos = (int) input.size();
+    }
+    int nextpos = (int) input.find(separator, startpos);
+    if (nextpos == std::string::npos || nextpos >= endpos) {
+        output.assign(input, startpos, endpos - startpos);
+        return false;
+    } else {
+        output.assign(input, startpos, nextpos - startpos);
+        if (bSqueezeMultipleSeparators) {
+            // skip past multiple token separators, if present.
+            do { nextpos++; } while(nextpos < endpos && input[nextpos] == separator);
+            startpos = nextpos;
+        } else {
+            // assume only one separator and advance to the next character.
+            startpos = nextpos + 1;
+        }
+        return true;
+    }
+}
+
+
+
 //! This is our hook that is installed in place of the normal
 //! Winsock connect() API.
+/*!
+ * \param insock [in] Descriptor identifying an unconnected socket. 
+ * \param name [in] Name of the socket in the sockaddr structure to which 
+ *      the connection should be established. 
+ * \param namelen [in] Length of name, in bytes 
+ * \return If no error occurs, connect returns zero. Otherwise, it returns
+ *      SOCKET_ERROR, and a specific error code can be retrieved by 
+ *      calling WSAGetLastError.
+ *      On a blocking socket, the return value indicates success or failure 
+ *      of the connection attempt.
+ *      With a nonblocking socket, the connection attempt cannot be completed
+ *      immediately. In this case, connect will return SOCKET_ERROR, and
+ *      WSAGetLastError will return WSAEWOULDBLOCK.
+ */
 static int WINAPI Detour_connect(
         SOCKET insock, const struct sockaddr FAR *name, int namelen)
 {
     DOUT(("Detour_connect called\n"));
 
-#ifdef SECUREBLUEWINDOW
-    SearchAndSubclassWindow();
-#endif
 
     // If any of the arguments look bogus, then immediately bail out and
     // just let the original Winsock method handle it.
@@ -526,6 +593,23 @@ static int WINAPI Detour_connect(
 
 //! This is our hook that is installed in place of the normal
 //! Winsock accept() API.
+/*!
+ * \param insock [in] Descriptor identifying a socket that has been placed in a 
+ *      listening state with the listen function.  The connection is
+ *      actually made with the socket that is returned by accept. 
+ * \param addr [out] Optional pointer to a buffer that receives the address 
+ *      of the connecting entity, as known to the communications layer. The
+ *      exact format of the addr parameter is determined by the address family
+ *      that was established when the socket from the sockaddr structure 
+ *      was created. 
+ * \param addrlen [out] Optional pointer to an integer that contains the
+ *      length of addr. 
+ * \return If no error occurs, accept returns a value of type SOCKET that is
+ *      a descriptor for the new socket. This returned value is a handle for
+ *      the socket on which the actual connection is made.
+ *      Otherwise, a value of INVALID_SOCKET is returned, and a specific error 
+ *      code can be retrieved by calling WSAGetLastError.
+ */
 static SOCKET WINAPI Detour_accept(SOCKET insock, struct sockaddr *addr, int *addrlen)
 {
     DOUT(("Detour_accept called\n"));
@@ -591,6 +675,12 @@ static SOCKET WINAPI Detour_accept(SOCKET insock, struct sockaddr *addr, int *ad
 
 //! This is our hook that is installed in place of the normal
 //! Winsock closesocket() API.
+/*!
+ * \param insock [in] Descriptor identifying the socket to close. 
+ * \return If no error occurs, closesocket returns zero. Otherwise, a value 
+ *      of SOCKET_ERROR is returned, and a specific error code can be
+ *      retrieved by calling WSAGetLastError.
+ */
 static int WINAPI Detour_closesocket(SOCKET insock)
 {
     // Dismiss any outstanding dialog boxes relating to this socket.
@@ -615,6 +705,16 @@ static int WINAPI Detour_closesocket(SOCKET insock)
 
 //! This is our hook that is installed in place of the normal
 //! Winsock send() API.
+/*!
+ * \param insock [in] Descriptor identifying a connected socket. 
+ * \param buf [in] Buffer containing the data to be transmitted. 
+ * \param len [in] Length of the data in buf, in bytes flags 
+ * \param flags [in] Indicator specifying the way in which the call is made. 
+ * \return If no error occurs, send returns the total number of bytes sent,
+ *      which can be less than the number indicated by len. Otherwise, a
+ *      value of SOCKET_ERROR is returned, and a specific error code can be
+ *      retrieved by calling WSAGetLastError.
+ */
 static int WINAPI Detour_send(
         SOCKET insock, const char FAR *buf, int len, int flags)
 {
@@ -632,7 +732,81 @@ static int WINAPI Detour_send(
     DOUT(("-----\n"));
             DOUT(("Detour_send: intercepting SSL send for socket %d\n", (int) insock));
             DOUT(("Detour_send: intercepting SSL data is: %s\n", FilterPrintableBuffer(buf, len).c_str() ));
-            retval = stun->Send(buf, len);
+
+#ifdef HOOK_DCC_SCHAT
+            if (len > 0 && g_bSecureOutgoingDccChat) {
+                bool bufferchanged = false;
+                std::string buffer(buf, len);
+                for (int startpos = 0, eolpos = 0; 
+                    (eolpos = (int) buffer.find('\n', startpos)) != std::string::npos;
+                    startpos = eolpos + 1)
+                {
+                    int eolpos2 = (eolpos > 0 && buffer[eolpos - 1] == '\r' ? eolpos - 1 : eolpos);
+                    DOUT(("Detour_send: scanning received line \"%.*s\"\n", eolpos2 - startpos - 1, buffer.c_str() + startpos));
+                    if (eolpos2 <= startpos) continue;      // empty line.
+
+                    // first char must be colon, and last char must be ASCII 1 (^A).
+                    // this is a quick discriminator to screen out lines that can be ignored.
+                    if (buffer[startpos] != 'P' || buffer[eolpos2 - 1] != 1) continue;
+
+                    // must be followed by "PRIVMSG"
+                    std::string command;
+                    if (!SplitNextToken(buffer, ' ', startpos, eolpos2, command) || strcmp(command.c_str(), "PRIVMSG") != 0) continue;
+
+                    // must be followed by the receiving nickname ("nick" format).
+                    std::string receiver;
+                    if (!SplitNextToken(buffer, ' ', startpos, eolpos2, receiver)) continue;
+
+                    // must be followed by ":^A" some text and a closing "^A".
+                    if (buffer[startpos] != ':' || buffer[startpos + 1] != 1 || buffer[eolpos2 - 1] != 1) continue;
+                    int ctcpend = eolpos2 - 1;
+                    startpos += 2;
+
+                    // check if the CTCP command is a DCC CHAT.
+                    if (!SplitNextToken(buffer, ' ', startpos, ctcpend, command) || strcmp(command.c_str(), "DCC") != 0) continue;
+                    int schatstart = startpos;
+                    if (!SplitNextToken(buffer, ' ', startpos, ctcpend, command) || strcmp(command.c_str(), "CHAT") != 0) continue;
+                    if (!SplitNextToken(buffer, ' ', startpos, ctcpend, command) || strcmp(command.c_str(), "chat") != 0) continue;
+
+                    // get the IP Address and port number.
+                    std::string ipaddr, portnum;
+                    if (!SplitNextToken(buffer, ' ', startpos, ctcpend, ipaddr)) continue;
+                    SplitNextToken(buffer, ' ', startpos, ctcpend, portnum);
+                    if (portnum.empty()) continue;
+
+                    // intercept the port and change the command to a normal DCC CHAT.
+                    AddInterceptedPort(atoi(portnum.c_str()), true);
+                    buffer.insert(schatstart, 1, 'S');   // insert an "S" so that "CHAT" becomes "SCHAT"
+                    eolpos--;   // one char shorter now.                  
+                    bufferchanged = true;
+                } 
+                
+                if (bufferchanged) {
+                    const size_t buffersize = buffer.size();
+                    DOUT(("Detour_send: translated buffer \"%s\"\n", FilterPrintableBuffer(buffer.c_str(), buffersize).c_str() ));
+
+                    retval = stun->Send(buffer.c_str(), (int) buffersize);
+                    if (retval == buffersize) {
+                        // successfully sent the command buffer fully, so turn off the translation again.
+                        g_bSecureOutgoingDccChat = false;
+                    }
+                    bHandled = true;
+                }
+
+                /* TODO:
+
+                "PRIVMSG bovineone :.DCC CHAT chat 1116712249 3179.."
+
+                check if buffer contains "DCC CHAT" and the nickname is in our waiting list.
+                If so, change to "DCC SCHAT" and hook the specified listening port.
+                */
+            }
+#endif
+
+            if (!bHandled) {
+                retval = stun->Send(buf, len);
+            }
+
             DOUT(("Detour_send: intercepted SSL send for socket %d returned %d\n", (int) insock, retval));
     DOUT(("-----\n"));
             bHandled = true;
@@ -665,8 +839,19 @@ static int WINAPI Detour_send(
 }
 
 
+
 //! This is our hook that is installed in place of the normal
 //! Winsock recv() API.
+/*!
+ * \param insock [in] Descriptor identifying a connected socket. 
+ * \param buf [out] Buffer for the incoming data. 
+ * \param len [in] Length of buf, in bytes 
+ * \param flags [in] Flag specifying the way in which the call is made. 
+ * \return If no error occurs, recv returns the number of bytes received.
+ *      If the connection has been gracefully closed, the return value
+ *      is zero. Otherwise, a value of SOCKET_ERROR is returned, and a
+ *      specific error code can be retrieved by calling WSAGetLastError.
+ */
 static int WINAPI Detour_recv(
         SOCKET insock, char FAR *buf, int len, int flags)
 {
@@ -684,8 +869,81 @@ static int WINAPI Detour_recv(
     DOUT(("-----\n"));
             DOUT(("Detour_recv: intercepting SSL recv for socket %d\n", (int) insock));
             retval = stun->Recv(buf, len);
+
             DOUT(("Detour_recv: intercepted SSL recv for socket %d returned %d (%s)\n", 
                     (int) insock, retval, TranslateWinsockError(WSAGetLastError()) ));
+
+#ifdef HOOK_DCC_SCHAT
+            if (retval > 0) {
+                DOUT(("Detour_recv: got buffer \"%s\"\n", FilterPrintableBuffer(buf, retval).c_str() ));
+
+                bool bufferchanged = false;
+                std::string buffer(buf, retval);
+                for (int startpos = 0, eolpos = 0; 
+                    (eolpos = (int) buffer.find('\n', startpos)) != std::string::npos;
+                    startpos = eolpos + 1)
+                {
+                    int eolpos2 = (eolpos > 0 && buffer[eolpos - 1] == '\r' ? eolpos - 1 : eolpos);
+                    DOUT(("Detour_recv: scanning received line \"%.*s\"\n", eolpos2 - startpos - 1, buffer.c_str() + startpos));
+                    if (eolpos2 <= startpos) continue;      // empty line.
+
+                    // first char must be colon, and last char must be ASCII 1 (^A).
+                    // this is a quick discriminator to screen out lines that can be ignored.
+                    if (buffer[startpos] != ':' || buffer[eolpos2 - 1] != 1) continue;
+
+                    // must be followed by the sending nickname ("nick!user@host" format).
+                    std::string sender;
+                    if (!SplitNextToken(buffer, ' ', startpos, eolpos2, sender)) continue;
+
+                    // must be followed by "PRIVMSG"
+                    std::string command;
+                    if (!SplitNextToken(buffer, ' ', startpos, eolpos2, command) || strcmp(command.c_str(), "PRIVMSG") != 0) continue;
+
+                    // must be followed by the receiving nickname ("nick" format).
+                    std::string receiver;
+                    if (!SplitNextToken(buffer, ' ', startpos, eolpos2, receiver)) continue;
+
+                    // must be followed by ":^A" some text and a closing "^A".
+                    if (buffer[startpos] != ':' || buffer[startpos + 1] != 1 || buffer[eolpos2 - 1] != 1) continue;
+                    int ctcpend = eolpos2 - 1;
+                    startpos += 2;
+
+                    // check if the CTCP command is a DCC SCHAT.
+                    if (!SplitNextToken(buffer, ' ', startpos, ctcpend, command) || strcmp(command.c_str(), "DCC") != 0) continue;
+                    int schatstart = startpos;
+                    if (!SplitNextToken(buffer, ' ', startpos, ctcpend, command) || strcmp(command.c_str(), "SCHAT") != 0) continue;
+                    if (!SplitNextToken(buffer, ' ', startpos, ctcpend, command) || strcmp(command.c_str(), "chat") != 0) continue;
+
+                    // get the IP Address and port number.
+                    std::string ipaddr, portnum;
+                    if (!SplitNextToken(buffer, ' ', startpos, ctcpend, ipaddr)) continue;
+                    SplitNextToken(buffer, ' ', startpos, ctcpend, portnum);
+                    if (portnum.empty()) continue;
+
+                    // intercept the port and change the command to a normal DCC CHAT.
+                    AddInterceptedPort(atoi(portnum.c_str()), true);
+                    buffer.erase(schatstart, 1);   // erase the "S" in "SCHAT"
+                    eolpos--;   // one char shorter now.                  
+                    bufferchanged = true;
+                } 
+                
+                if (bufferchanged) {
+                    retval = (int) buffer.size();
+                    memcpy(buf, buffer.c_str(), retval);
+                    DOUT(("Detour_recv: translated buffer \"%s\"\n", FilterPrintableBuffer(buffer.c_str(), retval).c_str() ));
+                }
+                /* TODO:
+
+                ":BovineOne!jlawson@CAD57B8.E9A55D56.1ECE52C1.IP PRIVMSG bovinemoo :[DCC CHAT chat 1116712252 5000["
+
+                see if the buffer contains "DCC SCHAT".  If so, hook the specified port and change to "DCC CHAT"
+                DCC SCHAT chat <ipaddress> <port>
+                DCC SSEND <filename> <ipaddress> <port> <filesize>
+                */
+
+            }
+#endif
+
     DOUT(("-----\n"));
             bHandled = true;
         }
@@ -721,7 +979,6 @@ static int WINAPI Detour_recv(
  * This callback provides the ability to ask the user to confirm a 
  * new connection to a server.
  */
-
 static int verify_callback(int preverify_ok, X509_STORE_CTX *ctx)
 {
     DOUT(("verify_callback entered\n"));
@@ -795,8 +1052,11 @@ static std::string GetBaseDirectory(void)
     return buffer;
 }
 
-#define FileExists(fn)  (GetFileAttributes(fn) != (DWORD) -1L)
-
+//! Return true if the specified filename exists.
+static inline bool FileExists(const char *fn)
+{
+    return (GetFileAttributes(fn) != (DWORD) -1L);
+}
 
 
 //! initialize the global SSL context.
