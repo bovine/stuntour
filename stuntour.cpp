@@ -1,6 +1,6 @@
 // Transparent SSL Tunnel hooking.
 // Jeff Lawson <jlawson@bovine.net>
-// $Id: stuntour.cpp,v 1.3 2003/02/03 06:34:16 jlawson Exp $
+// $Id: stuntour.cpp,v 1.4 2003/05/18 21:36:07 jlawson Exp $
 
 /*
  * The implementation of the replacement API wrappers for the send/recv
@@ -67,6 +67,9 @@ int g_stunrefidx = 0;
 
 //! Unique context identifier used to initialize OpenSSL with.
 const char g_sid_ctx[] = "StunTour SID";
+
+//! Handle of the DLL instance.
+HINSTANCE g_hInstance = NULL;
 
 
 
@@ -354,7 +357,6 @@ static void InitializeInterceptedPortList(void)
 }
 
 
-
 //! This is our hook that is installed in place of the normal
 //! Winsock connect() API.
 static int WINAPI Detour_connect(
@@ -434,6 +436,9 @@ static int WINAPI Detour_connect(
 //! Winsock closesocket() API.
 static int WINAPI Detour_closesocket(SOCKET insock)
 {
+    // Dismiss any outstanding dialog boxes relating to this socket.
+    CloseConfirmationDialogForSocket(insock);
+
     // Free the SecureTunnel class associated with this socket, if it is
     // one of the wrapped sockets that we manage.
     EnterCriticalSection(&maplock);
@@ -560,79 +565,59 @@ static int WINAPI Detour_recv(
  * new connection to a server.
  */
 
-/* This needs to be called sometime later??
-if(SSL_get_verify_result(ssl)!=X509_V_OK)
-    berr_exit("Certificate doesn’t verify");
-*/
 static int verify_callback(int preverify_ok, X509_STORE_CTX *ctx)
 {
     DOUT(("verify_callback entered\n"));
 
+    /* This needs to be called sometime later??
+    if (SSL_get_verify_result(ssl) != X509_V_OK)
+        berr_exit("Certificate doesn’t verify");
+    */
+
+
     // Retrieve full details about certificate being verified.
     X509 *err_cert = X509_STORE_CTX_get_current_cert(ctx);
+    if (!err_cert) {
+        DOUT(("verify_callback could not obtain the certificate object from the context.\n"));
+    }
     int err = X509_STORE_CTX_get_error(ctx);
     int depth = X509_STORE_CTX_get_error_depth(ctx);
     SSL *ssl = (SSL*) X509_STORE_CTX_get_ex_data(ctx, SSL_get_ex_data_X509_STORE_CTX_idx());
+    if (!ssl) {
+        DOUT(("verify_callback could not obtain the SSL object from the certificate.\n"));
+        return 0;       // reject connection.
+    }
     SecureTunnel *stun = SecureTunnel::GetFromSSL(ssl);
-
-
-    char buf[256];
-    std::string textbuffer;
-
-    // Add the destination of the connection.
-    textbuffer.append("Destination:  ");
-    textbuffer.append(stun->GetAddressAndPort());
-    textbuffer.append("\n\n");
-
-    // Add the hostname and subject name do not match.
-    textbuffer.append("Partial Subject Name:\n");
-    X509_NAME_get_text_by_NID(X509_get_subject_name(err_cert), NID_commonName, buf, sizeof(buf));
-    textbuffer.append(buf);
-    textbuffer.append("\n\n");
-
-    // Add the name to which the certificate was issued.
-    textbuffer.append("Full Subject Name:\n");
-    X509_NAME_oneline(X509_get_subject_name(err_cert), buf, sizeof(buf));
-    textbuffer.append(buf);
-    textbuffer.append("\n\n");
-
-
-
-
-    if (!preverify_ok && (err == X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT)) {
-        textbuffer.append("Unknown Certificate Issuer:\n");
-        X509_NAME_oneline(X509_get_issuer_name(ctx->current_cert), buf, sizeof(buf));
-        textbuffer.append(buf);
-        textbuffer.append("\n\n");
+    if (!stun) {
+        DOUT(("verify_callback could not find an associated SecureTunnel session for the SSL object.\n"));
+        return 0;       // reject connection.
     }
 
-    /*
-    if (depth > mydata->verify_depth) {
-        preverify_ok = 0;
-        err = X509_V_ERR_CERT_CHAIN_TOO_LONG;
-        X509_STORE_CTX_set_error(ctx, err);
-    }
-    */
-    if (!preverify_ok) {
-        _snprintf(buf, sizeof(buf), "Verify error: %s (%s)\n",
-                X509_verify_cert_error_string(err), TranslateX509Error(err));
-        textbuffer.append(buf);
 
-        _snprintf(buf, sizeof(buf), "Chain verify depth: %d\n\n", depth);
-        textbuffer.append(buf);
-    }
+    // Prepare a structure containing the identity being verified.
+    ConfirmationDialogData confinfo;
+    confinfo.stunnel = stun;
+    confinfo.err_cert = err_cert;
+    confinfo.preverify_ok = preverify_ok;
+    confinfo.err = err;
+    confinfo.depth = depth;
 
-    DOUT(("verify_callback confirmation text:\n%s\n", textbuffer.c_str()));
-    
-    if (preverify_ok) {
-        //MessageBox(NULL, textbuffer.c_str(), "Identity verified", MB_OK | MB_ICONINFORMATION);
+    if (CheckAllowCertificate(&confinfo)) {
         DOUT(("verify_callback implicitly confirming connection\n"));
         return 1;       // allow connection.
-    } else if (MessageBox(NULL, textbuffer.c_str(), "Continue connecting?", MB_YESNO | MB_ICONEXCLAMATION) == IDYES) {
+    } else if (ConfirmCertificateDialog(&confinfo) == IDYES) {
         DOUT(("verify_callback confirming connection continuation\n"));
+        if (confinfo.bRememberChoice) {
+            // Persist positive confirmation
+            PersistAcceptanceForCertificate(&confinfo);
+        }
+        stun->bAccepted = true;
         return 1;       // allow connection.
     } else {
         DOUT(("verify_callback rejecting connection\n"));
+        if (confinfo.bRememberChoice) {
+            // TODO: Persist negative confirmation
+        }
         return 0;       // reject connection.
     }
 }
@@ -665,7 +650,8 @@ static void context_init(void)
     g_stunrefidx = SSL_get_ex_new_index(0, "SecureTunnel reference", NULL, NULL, NULL);
 
     // initialize the certificate cache.
-    SSL_CTX_set_session_cache_mode(g_ctx, SSL_SESS_CACHE_BOTH);
+    //SSL_CTX_set_session_cache_mode(g_ctx, SSL_SESS_CACHE_BOTH);
+    SSL_CTX_set_session_cache_mode(g_ctx, SSL_SESS_CACHE_OFF);
     //SSL_CTX_set_timeout(g_ctx, options.session_timeout);
 
     // enable callback verification during the certificate check.
@@ -793,6 +779,7 @@ BOOL WINAPI DllMain(HINSTANCE hInstDLL, DWORD fdwReason, LPVOID /*lpvReserved*/)
     if (fdwReason == DLL_PROCESS_ATTACH) {
         DOUT(("stuntour DllMain initializing\n"));
         DisableThreadLibraryCalls(hInstDLL);
+        g_hInstance = hInstDLL;
         return PerformStartup();
     } else if (fdwReason == DLL_PROCESS_DETACH) {
         DOUT(("stuntour DllMain shutting down\n"));

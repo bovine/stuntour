@@ -1,6 +1,6 @@
 // Transparent SSL Tunnel hooking.
 // Jeff Lawson <jlawson@bovine.net>
-// $Id: stuntour.h,v 1.1 2003/02/03 06:34:16 jlawson Exp $
+// $Id: stuntour.h,v 1.2 2003/05/18 21:36:07 jlawson Exp $
 
 #ifndef STUNTOUR_H__
 #define STUNTOUR_H__
@@ -95,18 +95,47 @@ class SecureTunnel {
 #endif
 
     //! protected constructors.
-    SecureTunnel() : ssl(NULL), sock(INVALID_SOCKET) {};
-    SecureTunnel(SOCKET s, const sockaddr_in &inaddr) : addr(inaddr), ssl(NULL), sock(s) {};
+    SecureTunnel() : ssl(NULL), sock(INVALID_SOCKET), bAccepted(false) { addr.sin_addr.S_un.S_addr = INADDR_NONE; };
+    SecureTunnel(SOCKET s, const sockaddr_in &inaddr) : addr(inaddr), ssl(NULL), sock(s), bAccepted(false) {};
 
 public:
 
+    //! Destructor.
     ~SecureTunnel();
+
+    //! The publicly exposed method for creating a new secure connection.
     static SecureTunnel *Attach(SOCKET s, const sockaddr_in &inaddr);
+
+    // Network send and receive methods called from the winsock hooks.
     int Send(const char FAR *buf, int len);
     int Recv(char FAR *buf, int len);
 
+    //! Determine the object pointer from an SSL object.
     static SecureTunnel *GetFromSSL(SSL *inssl);
+
+    //! Query information about this object.
     std::string GetAddressAndPort() const;
+    SOCKET GetSocket() { return sock; }
+    SSL *GetSSL() { return ssl; }
+
+    //! Certificate acceptance state.
+    bool bAccepted;
+};
+
+
+//-----------------------------
+
+struct ConfirmationDialogData
+{
+    // Identity information.
+    SecureTunnel *stunnel;          //!< Connection object.
+    X509 *err_cert;                 //!< actual OpenSSL certificate object.
+    int preverify_ok;               //!< whether OpenSSL's initial checks succeeded.
+    int err;
+    int depth;
+
+    // Response from user confirmation dialog checkbox.
+    bool bRememberChoice;
 };
 
 
@@ -117,15 +146,26 @@ public:
 const char *TranslateSSLError(int errorcode);
 const char *TranslateX509Error(int errorcode);
 const char *TranslateWinsockError(int errorcode);
+
+// mIRC specific functions.
 void SearchAndSubclassWindow(void);
+HWND GetOurParentWindow(void);
+
+// port interception list functions.
 bool AddInterceptedPort(unsigned short portnum);
 std::string QueryInterceptedPortListSpace();
 
+// certificate acceptance function.
+DWORD ConfirmCertificateDialog(ConfirmationDialogData *certinfo);
+bool CheckAllowCertificate(ConfirmationDialogData *certinfo);
+void CloseConfirmationDialogForSocket(SOCKET sock);
+void PersistAcceptanceForCertificate(ConfirmationDialogData *confinfo);
 
 //! shared globals.
 extern SSL_CTX *g_ctx;
 extern int g_stunrefidx;
 extern const char g_sid_ctx[];
+extern HINSTANCE g_hInstance;
 
 
 //-----------------------------
