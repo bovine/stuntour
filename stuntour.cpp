@@ -1,6 +1,6 @@
 // Transparent SSL Tunnel hooking.
 // Jeff Lawson <jlawson@bovine.net>
-// $Id: stuntour.cpp,v 1.2 2002/11/29 04:23:40 jlawson Exp $
+// $Id: stuntour.cpp,v 1.3 2003/02/03 06:34:16 jlawson Exp $
 
 /*
  * The implementation of the replacement API wrappers for the send/recv
@@ -30,106 +30,25 @@
  * and this wrapper doesn't attempt to accomodate this occurrence well.
  */
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-
-#ifndef WIN32
-#define WIN32       // used by openssl headers for platform checking
-#endif
-
-// Standard Windows headers.
-#include <windows.h>
-#include <winsock.h>
-
-// Standard ANSI C headers
-#include <stdio.h>
-#include <string.h>
-#include <assert.h>
-#include <stdarg.h>
-
-// Standard Template Library
-#pragma warning(disable:4786 4512 4100)
-#pragma warning(disable:4097 4127)
-#include <map>
-#include <set>
-
-// OpenSSL/libeay crypto headers.
-#include <openssl/lhash.h>
-#include <openssl/ssl.h>
-#include <openssl/err.h>
-#include <openssl/rand.h>
-
-#if !defined(OPENSSL_VERSION_NUMBER) || (OPENSSL_VERSION_NUMBER < 0x0090581fL)
-#error "Unsupported OpenSSL version for compilation."
-#endif
-
-// Microsoft Detours API hooking headers.
-#include <detours.h>
+// Our private header
+#include "stuntour.h"
 
 
-//! Debug logging macros.
-#ifdef NDEBUG
-    #define DOUT(x)       // nothing when debugging is disabled.
-#else
-    #pragma message("building with DOUT() message logging enabled")
-    static inline void dout_helper(const char *formatstr, ...) {
-        va_list ap;
-        char buffer[1024];
-        va_start(ap, formatstr);
-        _vsnprintf(buffer, sizeof(buffer), formatstr, ap);
-        OutputDebugString(buffer);
-        va_end(ap);
-    }
-    #define DOUT(x)   dout_helper x
-#endif
-
-//! Defines the registry location for all of our settings.
-static const char regname_base[] = { "Software\\Bovine Networking Technologies, Inc.\\StunTour" };
 
 //! Defines what destination port numbers are automatically redirected
 //! through an SSL-tunnel.
-static unsigned short intercepted_ports[] = {
+static unsigned short intercepted_ports[128] = {
     994,    // standard RFC allocated port for IRCS
     7000, 7001, 7002, 7003,     // blabber.net and others
     6657,   // sirc.hu
     6697,   // axenet
     9998, 9999,   // suidnet, chatsages
+    6999,   // biteme-irc
     6000,   // wondernet
+    9000,   // chatchannel.org
     25401,
     0     // terminating entry in list (don't remove).
 };
-
-//! This flag probably will always need to be left on.
-#define PLEASEBLOCK 1
-
-
-//! Define this flag to draw a blue border around mIRC when a secure connection is made.
-//#define SECUREBLUEWINDOW 1
-
-
-//! An internal class constructed for each connection that we are
-//! currently intercepting and providing SSL tunnelling services for.
-class SecureTunnel {
-    //! address and port of the remote party.
-    sockaddr_in addr;
-
-    //! vital state information.
-    SSL *ssl;
-    SOCKET sock;
-
-    //! protected constructors.
-    SecureTunnel() : ssl(NULL), sock(INVALID_SOCKET) {};
-    SecureTunnel(SOCKET s, const sockaddr_in &inaddr) : addr(inaddr), ssl(NULL), sock(s) {};
-
-public:
-
-    ~SecureTunnel();
-    static SecureTunnel *Attach(SOCKET s, const sockaddr_in &inaddr);
-    int Send(const char FAR *buf, int len);
-    int Recv(char FAR *buf, int len);
-};
-
 
 
 //! Global mutex variables to allow thread-safe access to the map.
@@ -139,19 +58,15 @@ static CRITICAL_SECTION maplock;
 typedef std::map<SOCKET, SecureTunnel*> securetunnelmap_t;
 static securetunnelmap_t SecureTunnelMap;
 
-//! global SSL context.
-static SSL_CTX *ctx;
+//! global OpenSSL context.
+SSL_CTX *g_ctx = NULL;
 
-//! Unique context identifier used to initialize SSL with.
-static const char sid_ctx[] = "stunnel SID";
+//! Allocated application-specific index for storing a SecureTunnel 
+//! pointer refererence within an OpenSSL SSL object.
+int g_stunrefidx = 0;
 
-
-
-
-// forward reference prototypes.
-#ifdef SECUREBLUEWINDOW
-static void SearchAndSubclassWindow(void);
-#endif
+//! Unique context identifier used to initialize OpenSSL with.
+const char g_sid_ctx[] = "StunTour SID";
 
 
 
@@ -175,7 +90,7 @@ DETOUR_TRAMPOLINE(int WINAPI Trampoline_closesocket(
 
 
 //! Return a textual string representing of an SSL error code.
-static const char *TranslateSSLError(int errorcode) {
+const char *TranslateSSLError(int errorcode) {
     switch (errorcode) {
         MAPERROR(SSL_ERROR_NONE);
         MAPERROR(SSL_ERROR_SSL);
@@ -187,15 +102,58 @@ static const char *TranslateSSLError(int errorcode) {
         MAPERROR(SSL_ERROR_WANT_CONNECT);
         default: {
             static char buffer[20];
-            sprintf(buffer, "SSL=%d", errorcode);
+            _snprintf(buffer, sizeof(buffer), "SSL=%d", errorcode);
             return buffer;
         }
     }
 }
 
+//! Return a textual string representing of an OpenSSL X.509 certificate verification error code.
+const char *TranslateX509Error(int errorcode) {
+    switch (errorcode) {
+        MAPERROR(X509_V_OK);
+        MAPERROR(X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT);
+        MAPERROR(X509_V_ERR_UNABLE_TO_GET_CRL);
+        MAPERROR(X509_V_ERR_UNABLE_TO_DECRYPT_CERT_SIGNATURE);
+        MAPERROR(X509_V_ERR_UNABLE_TO_DECRYPT_CRL_SIGNATURE);
+        MAPERROR(X509_V_ERR_UNABLE_TO_DECODE_ISSUER_PUBLIC_KEY);
+        MAPERROR(X509_V_ERR_CERT_SIGNATURE_FAILURE);
+        MAPERROR(X509_V_ERR_CRL_SIGNATURE_FAILURE);
+        MAPERROR(X509_V_ERR_CERT_NOT_YET_VALID);
+        MAPERROR(X509_V_ERR_CERT_HAS_EXPIRED);
+        MAPERROR(X509_V_ERR_CRL_NOT_YET_VALID);
+        MAPERROR(X509_V_ERR_CRL_HAS_EXPIRED);
+        MAPERROR(X509_V_ERR_ERROR_IN_CERT_NOT_BEFORE_FIELD);
+        MAPERROR(X509_V_ERR_ERROR_IN_CERT_NOT_AFTER_FIELD);
+        MAPERROR(X509_V_ERR_ERROR_IN_CRL_LAST_UPDATE_FIELD);
+        MAPERROR(X509_V_ERR_ERROR_IN_CRL_NEXT_UPDATE_FIELD);
+        MAPERROR(X509_V_ERR_OUT_OF_MEM);
+        MAPERROR(X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT);
+        MAPERROR(X509_V_ERR_SELF_SIGNED_CERT_IN_CHAIN);
+        MAPERROR(X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY);
+        MAPERROR(X509_V_ERR_UNABLE_TO_VERIFY_LEAF_SIGNATURE);
+        MAPERROR(X509_V_ERR_CERT_CHAIN_TOO_LONG);
+        MAPERROR(X509_V_ERR_CERT_REVOKED);
+        MAPERROR(X509_V_ERR_INVALID_CA);
+        MAPERROR(X509_V_ERR_PATH_LENGTH_EXCEEDED);
+        MAPERROR(X509_V_ERR_INVALID_PURPOSE);
+        MAPERROR(X509_V_ERR_CERT_UNTRUSTED);
+        MAPERROR(X509_V_ERR_CERT_REJECTED);
+        MAPERROR(X509_V_ERR_SUBJECT_ISSUER_MISMATCH);
+        MAPERROR(X509_V_ERR_AKID_SKID_MISMATCH);
+        MAPERROR(X509_V_ERR_AKID_ISSUER_SERIAL_MISMATCH);
+        MAPERROR(X509_V_ERR_KEYUSAGE_NO_CERTSIGN);
+        MAPERROR(X509_V_ERR_APPLICATION_VERIFICATION);
+        default: {
+            static char buffer[20];
+            _snprintf(buffer, sizeof(buffer), "X509=%d", errorcode);
+            return buffer;
+        }
+    }
+}
 
 //! Return a textual string representing of a Winsock error code.
-static const char *TranslateWinsockError(int errorcode) {
+const char *TranslateWinsockError(int errorcode) {
     switch (errorcode) {
         MAPERROR(WSAEINTR);
         MAPERROR(WSAEBADF);
@@ -246,14 +204,14 @@ static const char *TranslateWinsockError(int errorcode) {
         MAPERROR(WSANOTINITIALISED);
         default: {
             static char buffer[20];
-            sprintf(buffer, "WSA=%d", errorcode);
+            _snprintf(buffer, sizeof(buffer), "WSA=%d", errorcode);
             return buffer;
         }
     }
 }
 
 
-#if 0
+/*
 //! Puts a socket into blocking mode.
 static int SetSocketBlocking(SOCKET sock)
 {
@@ -268,263 +226,19 @@ static int SetSocketNonBlocking(SOCKET sock)
     unsigned long value = 1;
     return ioctlsocket(sock, FIONBIO, &value);
 }
-#endif
+*/
 
-static void WaitForReadability(SOCKET socket)
+
+//! Returns a copy of the input buffer with non-printable characters masked.
+static std::string FilterPrintableBuffer(const void *buf, size_t buflen)
 {
-    fd_set rs;
-    FD_ZERO(&rs);
-    FD_SET(socket, &rs);
-    select(0, &rs, NULL, NULL, NULL);
+    std::string newbuf((const char*)buf, buflen);
+    for (size_t i = 0; i < buflen; i++) {
+        if (!isprint(newbuf[i])) newbuf[i] = '.';
+    }
+    return newbuf;
 }
 
-static void WaitForWritability(SOCKET socket)
-{
-    fd_set ws;
-    FD_ZERO(&ws);
-    FD_SET(socket, &ws);
-    select(0, NULL, &ws, NULL, NULL);
-}
-
-
-//! Destructor for our connection interception.
-/*!
- * Handles freeing of the SSL context.
- */
-SecureTunnel::~SecureTunnel() {
-    if (ssl != NULL) {
-        SSL_set_shutdown(ssl, SSL_SENT_SHUTDOWN|SSL_RECEIVED_SHUTDOWN);
-        SSL_free(ssl);
-    }
-}
-
-
-//! The only public way to create an instance of the SecureTunnel class.
-/*!
- * \param insock Supplies the opened socket handle that should be intercepted.
- * \param inaddr Indicates the destination address to where the socket
- *          was connecting to.
- * \return Returns a pointer to the new SecureTunnel class instance.
- */
-SecureTunnel *SecureTunnel::Attach(SOCKET insock, const sockaddr_in &inaddr)
-{
-    // construct a new class instance.
-    SecureTunnel *newobj = new SecureTunnel(insock, inaddr);
-    if (!newobj) {
-        WSASetLastError(WSAENOBUFS);
-        return NULL;
-    }
-
-    // do the job.
-    newobj->ssl = SSL_new(ctx);
-    if (!newobj->ssl) {
-        DOUT(("SSL_new failed to create a new context\n"));
-        delete newobj;
-        return NULL;
-    }
-    SSL_set_session_id_context(newobj->ssl,
-                               (const unsigned char*) sid_ctx, strlen(sid_ctx));
-
-    // Attempt to use the most recent id in the session cache.
-    if ( ctx->session_cache_head ) {
-        if ( ! SSL_set_session(newobj->ssl, ctx->session_cache_head) ) {
-            DOUT(("Cannot set SSL session id to most recent used\n"));
-        }
-    }
-
-    // Associate the socket with the SSL object.
-    SSL_set_fd(newobj->ssl, insock);
-
-    // Sets ssl to work in client mode.
-    SSL_set_connect_state(newobj->ssl);
-
-    // make blocking mode sockets not return until completion.
-    SSL_set_mode(newobj->ssl, SSL_MODE_AUTO_RETRY);
-
-
-    // Try to connect the ssl tunnel.
-    int num = SSL_connect(newobj->ssl);
-    if (num <= 0) {
-        int sslerror = (int) SSL_get_error(newobj->ssl, num);
-        int wsagle = WSAGetLastError();
-        switch (sslerror) {
-            case SSL_ERROR_NONE:
-                // great, no problem.
-                break;
-
-            case SSL_ERROR_WANT_CONNECT:
-            case SSL_ERROR_WANT_WRITE:
-            case SSL_ERROR_WANT_READ:
-            case SSL_ERROR_WANT_X509_LOOKUP:
-                // not an error, but the connection could not be established yet.
-                DOUT(("SSL_connect deferred SSL establishment because of a %s condition.\n",
-                      TranslateSSLError(sslerror) ));
-                break;
-
-            case SSL_ERROR_SYSCALL:
-                if (wsagle == WSAENOTCONN) {
-                    // not an error, but the connection could not be established yet.
-                    // (probably socket is non-blocking and the connect() is not done.)
-                    DOUT(("SSL_connect deferred SSL establishment because not yet connected.\n"));
-                    break;
-                }
-                // otherwise drop through to default case.
-
-            default:
-                DOUT(("SSL_connect returning failure (%s, %s)\n",
-                      TranslateSSLError(sslerror), TranslateWinsockError(wsagle)));
-                delete newobj;
-                return NULL;
-        }
-    }
-
-    return newobj;
-}
-
-
-//! Sends data over the encrypted SSL tunnel.
-/*!
- * When an error is returned, the Winsock function WSAGetLastError() can
- * be used to determine the nature of the failure.
- *
- * If the socket was closed during the write attempt, then 0 will be
- * returned to the caller.
- *
- * \param buf Supplies a pointer to the input data buffer to send.
- * \param len Indicates the number of bytes to send.
- * \return Returns -1 on error, otherwise the number of bytes sent.
- *      Will never successfully return a value that is fewer than the
- *      argument 'len' requested.
- */
-int SecureTunnel::Send(const char FAR *buf, int len)
-{
-    // catch easy argument errors.
-    if (!buf || len < 0 || IsBadReadPtr(buf, len)) {
-        WSASetLastError(WSAEFAULT);
-        return -1;
-    }
-    if (len == 0) return 0;
-
-    // First try performing the desired write.  If the socket is in
-    // blocking mode then this operation will block until the entire
-    // send (and any necessary protocol-level reads) is complete.
-TryAgain:
-    int num = SSL_write(ssl, buf, len);
-    int sslerror = (int) SSL_get_error(ssl, num);
-    switch (sslerror) {
-        case SSL_ERROR_NONE:
-            assert(num > 0 && num == len);
-            return num;
-
-#ifdef PLEASEBLOCK
-        case SSL_ERROR_WANT_WRITE:
-            WaitForWritability(sock);
-            goto TryAgain;
-
-        case SSL_ERROR_WANT_READ:
-            WaitForReadability(sock);
-            goto TryAgain;
-#else
-        case SSL_ERROR_WANT_WRITE:
-        case SSL_ERROR_WANT_READ:
-            DOUT(("SecureTunnel::Send -- SSL_write returned %s - retry later\n",
-                  TranslateSSLError(sslerror) ));
-            WSASetLastError(WSAEWOULDBLOCK);
-            return -1;
-#endif
-
-        case SSL_ERROR_SYSCALL:
-            DOUT(("SecureTunnel::Send -- SSL_write (socket)\n"));
-            WSASetLastError(WSAENETDOWN);
-            return -1;
-
-        case SSL_ERROR_ZERO_RETURN:
-            DOUT(("SecureTunnel::Send -- SSL closed on write\n"));
-            WSASetLastError(WSAENOTCONN);
-            return 0;   // was -1
-
-        case SSL_ERROR_SSL:
-            DOUT(("SecureTunnel::Send -- SSL_write\n"));
-            WSASetLastError(WSAENETDOWN);
-            return -1;
-        default:
-            DOUT(("SecureTunnel::Send -- Unhandled SSL Error (%s, %s)\n",
-                  TranslateSSLError(sslerror), TranslateWinsockError(WSAGetLastError()) ));
-            WSASetLastError(WSAENETDOWN);
-            return -1;
-    }
-}
-
-
-//! Reads bytes from the encrypted channel and into a buffer.
-/*!
- * When an error is returned, the Winsock function WSAGetLastError() can
- * be used to determine the nature of the failure.
- *
- * If the socket was closed during the read attempt, then 0 will be
- * returned to the caller.
- *
- * \param buf Supplies the buffer that should be filled with data.
- * \param len Indicates the maximum number of bytes that the buffer
- *      can accomodates.
- * \return Returns -1 on error, otherwise the number of bytes that were
- *      successfully read.  The number of bytes read may be less than
- *      the maximum size requested.
- */
-int SecureTunnel::Recv(char FAR *buf, int len) {
-    // catch easy argument errors.
-    if (!buf || len < 0 || IsBadWritePtr(buf, len)) {
-        WSASetLastError(WSAEFAULT);
-        return -1;
-    }
-    if (len == 0) return 0;
-
-    // First try performing the desired read.  If the socket is in
-    // blocking mode then this operation will block until the entire
-    // receive (and any necessary protocol-level write) is complete.
-TryAgain:
-    int num = SSL_read(ssl, buf, len);
-    int sslerror = (int) SSL_get_error(ssl, num);
-    switch (sslerror) {
-        case SSL_ERROR_NONE:
-            assert(num > 0 && num <= len);
-            return num;
-
-#ifdef PLEASEBLOCK
-        case SSL_ERROR_WANT_WRITE:
-            WaitForWritability(sock);
-            goto TryAgain;
-#else
-        case SSL_ERROR_WANT_WRITE:
-#endif
-        case SSL_ERROR_WANT_READ:
-            DOUT(("SecureTunnel::Recv -- SSL_read returned %s - retry later\n",
-                  TranslateSSLError(sslerror) ));
-            WSASetLastError(WSAEWOULDBLOCK);
-            return -1;
-
-        case SSL_ERROR_SYSCALL:
-            DOUT(("SecureTunnel::Recv -- SSL_read (socket)\n"));
-            WSASetLastError(WSAENETDOWN);
-            return -1;
-
-        case SSL_ERROR_ZERO_RETURN:
-            DOUT(("SecureTunnel::Recv -- SSL closed on read\n"));
-            WSASetLastError(WSAENOTCONN);
-            return 0;   // was -1
-
-        case SSL_ERROR_SSL:
-            DOUT(("SecureTunnel::Recv -- SSL_read (%s, %s)\n",
-                  TranslateSSLError(sslerror), TranslateWinsockError(WSAGetLastError()) ));
-            WSASetLastError(WSAENETDOWN);
-            return -1;
-
-        default:
-            DOUT(("SecureTunnel::Recv -- Unhandled SSL Error\n"));
-            WSASetLastError(WSAENETDOWN);
-            return -1;
-    }
-}
 
 
 
@@ -540,27 +254,105 @@ TryAgain:
  */
 static bool IsInterceptedPort(unsigned short portnum)
 {
-#if 0
-    // In the future, we might want to allow a configurable list of
-    // port number that we will intercept.  Eventually, this list might
-    // be generated by looking at a registry key.
-    typedef std::set<unsigned short> portlist_t;
-    portlist_t InterceptedPortList;
-
-    // But for now, we only populate the inception list with the hardcoded default.
-    InterceptedPortList.insert(INTERCEPTED_PORT1);
-    InterceptedPortList.insert(INTERCEPTED_PORT2);
-
-    portlist_t::const_iterator iter = InterceptedPortList.find(portnum);
-    return(iter != InterceptedPortList.end());
-#else
     // Check the port in our built-in list of ports to hook.
     for (int i = 0; intercepted_ports[i] != 0; i++) {
         if (intercepted_ports[i] == portnum) return true;
     }
     return false;
-#endif
 }
+
+//! Generates a string containing a list of all ports being hooked.
+std::string QueryInterceptedPortListSpace()
+{
+    std::string output;
+    for (int i = 0; intercepted_ports[i] != 0; i++) {
+        char buf[32];
+        _snprintf(buf, sizeof(buf), "%u ", intercepted_ports[i]);
+        output += buf;
+    }
+    return output;
+}
+
+//! Generates a string containing a list of all ports being hooked.
+static std::string QueryInterceptedPortListNull()
+{
+    std::string output;
+    for (int i = 0; intercepted_ports[i] != 0; i++) {
+        char buf[32];
+        _snprintf(buf, sizeof(buf), "%u", intercepted_ports[i]);
+        output.append(buf, strlen(buf) + 1);
+    }
+    output.append("\0", 1);     // ensure an extra, double-null
+    return output;
+}
+
+
+//! Adds an additional port number to the internal list.
+bool AddInterceptedPort(unsigned short portnum)
+{
+    if (portnum == 0) {
+        return false;        // port cannot be zero.
+    }
+
+    // Check the port in our built-in list of ports to hook.
+    for (int i = 0; i < sizeof(intercepted_ports) / sizeof(intercepted_ports[0]) - 1; i++) {
+        if (intercepted_ports[i] == portnum) {
+            DOUT(("AddInterceptedPort: port %u is already added\n", portnum));
+            return true;        // already in list, nothing needs to be done.
+        }
+        if (intercepted_ports[i] == 0) {
+            intercepted_ports[i] = portnum;
+            DOUT(("AddInterceptedPort: successfully added port %u\n", portnum));
+            return true;        // successfully added.
+        }
+    }
+    DOUT(("AddInterceptedPort: could not add port %u because list is full\n", portnum));
+    return false;       // port could not be added (due to maximum size).
+}
+
+
+//! Loads the initial list of intercepted ports from the registry.
+static void InitializeInterceptedPortList(void)
+{
+    HKEY hkeySettings;
+    if (RegCreateKeyEx(HKEY_CURRENT_USER, REGKEYBASE, 0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE | KEY_READ, NULL, &hkeySettings, NULL) != ERROR_SUCCESS) {
+        return;
+    }
+
+    DWORD dwType;
+    char buffer[512];
+    DWORD dwBufferSize = sizeof(buffer);
+    if (RegQueryValueEx(hkeySettings, "Ports", NULL, &dwType, (LPBYTE) buffer, &dwBufferSize) == ERROR_SUCCESS) {
+        if (dwType == REG_MULTI_SZ || dwType == REG_SZ) {
+            char *endp = buffer + dwBufferSize;
+            for (char *p = buffer; p < endp; ) {
+                if (*p == '\0' || isspace(*p)) {
+                    p++; continue;
+                } else if (isdigit(*p)) {
+                    char *skip = p + 1;
+                    while (isdigit(*skip) && skip < endp) {
+                        skip++;
+                    }
+                    *skip = '\0';
+
+                    unsigned short portnum = (unsigned short) atoi(p);
+                    AddInterceptedPort(portnum);
+                    p = skip;
+                } else {
+                    p++;
+                }
+            }
+        }
+    }
+
+    std::string newlist = QueryInterceptedPortListNull();
+    RegSetValueEx(hkeySettings, "Ports", 0, REG_MULTI_SZ, 
+        reinterpret_cast<const BYTE *>(newlist.c_str()), 
+        static_cast<DWORD>(newlist.size()) );
+
+    RegCloseKey(hkeySettings);
+}
+
 
 
 //! This is our hook that is installed in place of the normal
@@ -568,31 +360,36 @@ static bool IsInterceptedPort(unsigned short portnum)
 static int WINAPI Detour_connect(
         SOCKET insock, const struct sockaddr FAR *name, int namelen)
 {
+    DOUT(("Detour_connect called\n"));
+
 #ifdef SECUREBLUEWINDOW
     SearchAndSubclassWindow();
 #endif
 
     // If any of the arguments look bogus, then immediately bail out and
     // just let the original Winsock method handle it.
-    if (!insock || insock == INVALID_SOCKET || !name ||
-        namelen < sizeof(sockaddr_in) || name->sa_family != AF_INET) {
+    if (!insock || 
+        insock == INVALID_SOCKET || 
+        !name ||
+        namelen < sizeof(sockaddr_in) || 
+        name->sa_family != AF_INET) 
+    {
         // This looks like a bogus connection attempt, so we'll ignore it
         // and just let the system API handle the error code.
-        DOUT(("Detour_connect: bypassing connect 1\n"));
+        DOUT(("Detour_connect: bypassing connect, due to bogus inputs\n"));
         return Trampoline_connect(insock, name, namelen);
     }
 
 
     // Decide if we should intercept this connection or not.
     const sockaddr_in &inaddr = *(const sockaddr_in *)name;
-    if (!IsInterceptedPort(ntohs(inaddr.sin_port))) {
-        // This isn't a connection to a port that we are cofigured to hook.
-        DOUT(("Detour_connect: bypassing connect 2\n"));
+    if (!IsInterceptedPort(ntohs(inaddr.sin_port))) 
+    {
+        // This isn't a connection to a port that we are configured to hook.
+        DOUT(("Detour_connect: bypassing connect, due to non-intercepted port\n"));
         return Trampoline_connect(insock, name, namelen);
     }
 
-
-//SetSocketBlocking(insock);      // put into blocking mode.
 
     // Call the underlying connect() and see if it succeeds.
     int retval = Trampoline_connect(insock, name, namelen);
@@ -612,7 +409,7 @@ static int WINAPI Detour_connect(
     // Build the associated SSL state information around the socket.
     DOUT(("Detour_connect: attaching SSL onto connection to %s:%d (socket %d)\n",
           inet_ntoa(inaddr.sin_addr), (int) ntohs(inaddr.sin_port), (int) insock));
-    SecureTunnel *stun = stun->Attach(insock, inaddr);
+    SecureTunnel *stun = SecureTunnel::Attach(insock, inaddr);
     if (!stun) {
         // We expect Attach() to call WSASetLastError() for us.
         // Note that for this case, the socket is actually still left open!
@@ -620,13 +417,13 @@ static int WINAPI Detour_connect(
         return SOCKET_ERROR;
     }
 
+    // Add the tracking information to our storage container.
 #ifdef USE_MAKEPAIR
     SecureTunnelMap.insert(std::make_pair(insock, stun));
 #else
     SecureTunnelMap.insert(std::pair<const SOCKET, SecureTunnel*>(insock, stun));
 #endif
 
-//SetSocketNonBlocking(insock);      // put back into non-blocking mode.
 
     return 0;
 }
@@ -670,10 +467,12 @@ static int WINAPI Detour_send(
         securetunnelmap_t::iterator iter = SecureTunnelMap.find(insock);
         if (iter != SecureTunnelMap.end()) {
             SecureTunnel *stun = iter->second;
+    DOUT(("-----\n"));
             DOUT(("Detour_send: intercepting SSL send for socket %d\n", (int) insock));
-            DOUT(("Detour_send: intercepting SSL data is: %s\n", buf));
+            DOUT(("Detour_send: intercepting SSL data is: %s\n", FilterPrintableBuffer(buf, len).c_str() ));
             retval = stun->Send(buf, len);
             DOUT(("Detour_send: intercepted SSL send for socket %d returned %d\n", (int) insock, retval));
+    DOUT(("-----\n"));
             bHandled = true;
         }
     } else {
@@ -685,9 +484,10 @@ static int WINAPI Detour_send(
     // the normal thing for it.
     if (!bHandled) {
         if (bNested) {
-            DOUT(("  Detour_send: nested send for socket %d\n", (int) insock));
+            DOUT(("  Detour_send: nested send of %d bytes for socket %d\n", (int) len, (int) insock));
         } else {
-            DOUT(("Detour_send: invoking pass-thru send for socket %d\n", (int) insock));
+    DOUT(("-----\n"));
+            DOUT(("Detour_send: invoking pass-thru send of %d bytes for socket %d\n", (int) len, (int) insock));
         }
         retval = Trampoline_send(insock, buf, len, flags);
         if (bNested) {
@@ -696,6 +496,7 @@ static int WINAPI Detour_send(
         } else {
             DOUT(("Detour_send: pass-thru for send returned %d (%s)\n",
                   retval, TranslateWinsockError(WSAGetLastError())));
+    DOUT(("-----\n"));
         }
     }
     return retval;
@@ -718,8 +519,12 @@ static int WINAPI Detour_recv(
         securetunnelmap_t::iterator iter = SecureTunnelMap.find(insock);
         if (iter != SecureTunnelMap.end()) {
             SecureTunnel *stun = iter->second;
+    DOUT(("-----\n"));
             DOUT(("Detour_recv: intercepting SSL recv for socket %d\n", (int) insock));
             retval = stun->Recv(buf, len);
+            DOUT(("Detour_recv: intercepted SSL recv for socket %d returned %d (%s)\n", 
+                    (int) insock, retval, TranslateWinsockError(WSAGetLastError()) ));
+    DOUT(("-----\n"));
             bHandled = true;
         }
     } else {
@@ -730,20 +535,106 @@ static int WINAPI Detour_recv(
     // If this wasn't a managed socket, then do the normal thing for it.
     if (!bHandled) {
         if (bNested) {
-            DOUT(("  Detour_send: nested recv for socket %d\n", (int) insock));
+            DOUT(("  Detour_recv: nested recv for socket %d\n", (int) insock));
         } else {
-            DOUT(("Detour_send: invoking pass-thru recv for socket %d\n", (int) insock));
+    DOUT(("-----\n"));
+            DOUT(("Detour_recv: invoking pass-thru recv for socket %d\n", (int) insock));
         }
         retval = Trampoline_recv(insock, buf, len, flags);
         if (bNested) {
-            DOUT(("  Detour_send: nested recv returned %d (%s)\n",
+            DOUT(("  Detour_recv: nested recv returned %d (%s)\n",
                   retval, TranslateWinsockError(WSAGetLastError())));
         } else {
-            DOUT(("Detour_send: pass-thru for recv returned %d (%s)\n",
+            DOUT(("Detour_recv: pass-thru for recv returned %d (%s)\n",
                   retval, TranslateWinsockError(WSAGetLastError())));
+    DOUT(("-----\n"));
         }
     }
     return retval;
+}
+
+
+//! Callback invoked by OpenSSL during certificate verification.
+/*!
+ * This callback provides the ability to ask the user to confirm a 
+ * new connection to a server.
+ */
+
+/* This needs to be called sometime later??
+if(SSL_get_verify_result(ssl)!=X509_V_OK)
+    berr_exit("Certificate doesn’t verify");
+*/
+static int verify_callback(int preverify_ok, X509_STORE_CTX *ctx)
+{
+    DOUT(("verify_callback entered\n"));
+
+    // Retrieve full details about certificate being verified.
+    X509 *err_cert = X509_STORE_CTX_get_current_cert(ctx);
+    int err = X509_STORE_CTX_get_error(ctx);
+    int depth = X509_STORE_CTX_get_error_depth(ctx);
+    SSL *ssl = (SSL*) X509_STORE_CTX_get_ex_data(ctx, SSL_get_ex_data_X509_STORE_CTX_idx());
+    SecureTunnel *stun = SecureTunnel::GetFromSSL(ssl);
+
+
+    char buf[256];
+    std::string textbuffer;
+
+    // Add the destination of the connection.
+    textbuffer.append("Destination:  ");
+    textbuffer.append(stun->GetAddressAndPort());
+    textbuffer.append("\n\n");
+
+    // Add the hostname and subject name do not match.
+    textbuffer.append("Partial Subject Name:\n");
+    X509_NAME_get_text_by_NID(X509_get_subject_name(err_cert), NID_commonName, buf, sizeof(buf));
+    textbuffer.append(buf);
+    textbuffer.append("\n\n");
+
+    // Add the name to which the certificate was issued.
+    textbuffer.append("Full Subject Name:\n");
+    X509_NAME_oneline(X509_get_subject_name(err_cert), buf, sizeof(buf));
+    textbuffer.append(buf);
+    textbuffer.append("\n\n");
+
+
+
+
+    if (!preverify_ok && (err == X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT)) {
+        textbuffer.append("Unknown Certificate Issuer:\n");
+        X509_NAME_oneline(X509_get_issuer_name(ctx->current_cert), buf, sizeof(buf));
+        textbuffer.append(buf);
+        textbuffer.append("\n\n");
+    }
+
+    /*
+    if (depth > mydata->verify_depth) {
+        preverify_ok = 0;
+        err = X509_V_ERR_CERT_CHAIN_TOO_LONG;
+        X509_STORE_CTX_set_error(ctx, err);
+    }
+    */
+    if (!preverify_ok) {
+        _snprintf(buf, sizeof(buf), "Verify error: %s (%s)\n",
+                X509_verify_cert_error_string(err), TranslateX509Error(err));
+        textbuffer.append(buf);
+
+        _snprintf(buf, sizeof(buf), "Chain verify depth: %d\n\n", depth);
+        textbuffer.append(buf);
+    }
+
+    DOUT(("verify_callback confirmation text:\n%s\n", textbuffer.c_str()));
+    
+    if (preverify_ok) {
+        //MessageBox(NULL, textbuffer.c_str(), "Identity verified", MB_OK | MB_ICONINFORMATION);
+        DOUT(("verify_callback implicitly confirming connection\n"));
+        return 1;       // allow connection.
+    } else if (MessageBox(NULL, textbuffer.c_str(), "Continue connecting?", MB_YESNO | MB_ICONEXCLAMATION) == IDYES) {
+        DOUT(("verify_callback confirming connection continuation\n"));
+        return 1;       // allow connection.
+    } else {
+        DOUT(("verify_callback rejecting connection\n"));
+        return 0;       // reject connection.
+    }
 }
 
 
@@ -752,24 +643,40 @@ static int WINAPI Detour_recv(
  * Because this prepares the global state, this should be done only
  * once per program instance.
  */
-void context_init(void)
+static void context_init(void)
 {
+    // seed the random number generator.
     RAND_screen();
     if ( !RAND_status() ) {
         DOUT(("RAND_screen failed to sufficiently seed PRNG"));
     }
 
+    // initialize other OpenSSL items.
     SSLeay_add_ssl_algorithms();
     SSL_load_error_strings();
-    ctx = SSL_CTX_new(SSLv3_client_method());
+    g_ctx = SSL_CTX_new(SSLv3_client_method());
+    if (!g_ctx) {
+        DOUT(("SSL_CTX_new failed to allocate new context\n"));
+        return;
+    }
 
-    SSL_CTX_set_session_cache_mode(ctx, SSL_SESS_CACHE_BOTH);
-    //SSL_CTX_set_timeout(ctx, options.session_timeout);
+    // allocate an application-specific index for storing a pointer to 
+    // the 'SecureTunnel' object inside of each 'SSL' object.
+    g_stunrefidx = SSL_get_ex_new_index(0, "SecureTunnel reference", NULL, NULL, NULL);
 
-    //SSL_CTX_set_verify(ctx, options.verify_level, verify_callback);
-    //SSL_CTX_set_info_callback(ctx, info_callback);
+    // initialize the certificate cache.
+    SSL_CTX_set_session_cache_mode(g_ctx, SSL_SESS_CACHE_BOTH);
+    //SSL_CTX_set_timeout(g_ctx, options.session_timeout);
 
-    //if (!SSL_CTX_set_cipher_list(ctx, options.cipher_list)) {
+    // enable callback verification during the certificate check.
+    SSL_CTX_set_verify(g_ctx, SSL_VERIFY_PEER, verify_callback);
+    //SSL_CTX_load_verify_locations()
+    //SSL_CTX_set_info_callback(g_ctx, info_callback);
+    //SSL_CTX_set_options(g_ctx, SSL_OP_ALL);
+ 	//SSL_CTX_set_default_verify_paths(g_ctx);
+
+
+    //if (!SSL_CTX_set_cipher_list(g_ctx, options.cipher_list)) {
     //   sslerror("SSL_CTX_set_cipher_list");
     //   exit(1);
     //}
@@ -778,12 +685,11 @@ void context_init(void)
 
 //! Free the global SSL context.
 /*!
- * Because this prepares the global state, this should be done only
- * once per program instance.
+ * Should be done before process termination.
  */
-void context_free(void)
+static void context_free(void)
 {
-    SSL_CTX_free(ctx);
+    SSL_CTX_free(g_ctx);
 }
 
 
@@ -791,56 +697,71 @@ void context_free(void)
 /*!
  * returns 0 on error.
  */
-int PerformStartup(void)
+static int PerformStartup(void)
 {
+    DOUT(("stuntour PerformStartup beginning\n"));
+    
     // Make sure that we are running on Win2k.
     OSVERSIONINFO osverinfo;
     memset(&osverinfo, 0, sizeof(OSVERSIONINFO));
     osverinfo.dwOSVersionInfoSize = sizeof(OSVERSIONINFO);
-    if (!GetVersionEx(&osverinfo) || osverinfo.dwMajorVersion < 5) {
+    if (!GetVersionEx(&osverinfo) || 
+      osverinfo.dwPlatformId != VER_PLATFORM_WIN32_NT ||
+      osverinfo.dwMajorVersion < 5)
+    {
         // must be at least version 5 (Windows 2000 or higher).
+        DOUT(("stuntour PerformStartup version check failed\n"));
         return 0;
     }
 
     // Initialize Winsock for v1.1 services.
     WSADATA wsa_state;
-    if (WSAStartup(0x0101, &wsa_state)!=0) {
-        return 0;
-    }
-
-    // Install the API hooks.
-    if (!DetourFunctionWithTrampoline(
-             (PBYTE)Trampoline_connect, (PBYTE)Detour_connect)) {
-        return 0;
-    }
-    if (!DetourFunctionWithTrampoline(
-             (PBYTE)Trampoline_closesocket, (PBYTE)Detour_closesocket)) {
-        return 0;
-    }
-    if (!DetourFunctionWithTrampoline(
-             (PBYTE)Trampoline_send, (PBYTE)Detour_send)) {
-        return 0;
-    }
-    if (!DetourFunctionWithTrampoline(
-             (PBYTE)Trampoline_recv, (PBYTE)Detour_recv)) {
+    if (WSAStartup(MAKEWORD(1, 1), &wsa_state) != 0) {
+        DOUT(("stuntour PerformStartup Winsock init failed\n"));
         return 0;
     }
 
     // initialize global SSL context.
     context_init();
 
+    // read in the list of additional ports from the registry
+    InitializeInterceptedPortList();
+
     // initialize our locking mutex for our critical data.
     InitializeCriticalSection(&maplock);
 
+    // Install the API hooks.
+    if (!DetourFunctionWithTrampoline(
+                (PBYTE)Trampoline_connect, (PBYTE)Detour_connect)) {
+        DOUT(("stuntour PerformStartup Trampoline_connect failed\n"));
+        return 0;
+    }
+    if (!DetourFunctionWithTrampoline(
+                (PBYTE)Trampoline_closesocket, (PBYTE)Detour_closesocket)) {
+        DOUT(("stuntour PerformStartup Trampoline_closesocket failed\n"));
+        return 0;
+    }
+    if (!DetourFunctionWithTrampoline(
+                (PBYTE)Trampoline_send, (PBYTE)Detour_send)) {
+        DOUT(("stuntour PerformStartup Trampoline_send failed\n"));
+        return 0;
+    }
+    if (!DetourFunctionWithTrampoline(
+                (PBYTE)Trampoline_recv, (PBYTE)Detour_recv)) {
+        DOUT(("stuntour PerformStartup Trampoline_recv failed\n"));
+        return 0;
+    }
+
+    DOUT(("stuntour PerformStartup complete\n"));
     return 1;
 }
 
 
 //! Deinitialization method that is invoked when the library is unloaded.
 /*!
- * returns 0 on error.
+ * \return Returns 0 on error.
  */
-int PerformShutdown(void)
+static int PerformShutdown(void)
 {
     // shut down winsock services.
     WSACleanup();
@@ -854,7 +775,7 @@ int PerformShutdown(void)
     DetourRemove((PBYTE)Trampoline_send, (PBYTE)Detour_send);
     DetourRemove((PBYTE)Trampoline_recv, (PBYTE)Detour_recv);
 
-    return 1;
+    return 1;       // success
 }
 
 
@@ -865,7 +786,7 @@ int PerformShutdown(void)
  * \param fdwReason Reason for calling this function.  Indicates whether
  *      the library was being loaded or unloaded within the process.
  * \param lpvReserved Reserved value.
- * \return returns TRUE if it succeeds or FALSE if initialization fails.
+ * \return Returns TRUE if it succeeds or FALSE if initialization fails.
  */
 BOOL WINAPI DllMain(HINSTANCE hInstDLL, DWORD fdwReason, LPVOID /*lpvReserved*/)
 {
@@ -880,193 +801,4 @@ BOOL WINAPI DllMain(HINSTANCE hInstDLL, DWORD fdwReason, LPVOID /*lpvReserved*/)
     return TRUE;
 }
 
-// -----------------------------------
-// mIRC blue-window painting specific things follow...
-
-#ifdef SECUREBLUEWINDOW
-
-static HWND hwndSavedWindow = NULL;
-static WNDPROC lpfnOldWindowProc = NULL;
-
-
-static LRESULT CALLBACK Detour_mIRCWindowProc(
-  HWND hwnd,      // handle to window
-  UINT uMsg,      // message identifier
-  WPARAM wParam,  // first message parameter
-  LPARAM lParam   // second message parameter
-)
-{
-    if (uMsg == WM_NCPAINT) {
-        // First let the original method do its work.
-        LRESULT lResult = CallWindowProc(lpfnOldWindowProc, hwnd, uMsg, wParam, lParam);
-
-        // Now overpaint the border with a blue line.
-        HDC hdc = GetDCEx(hwnd, (HRGN)wParam, DCX_WINDOW|DCX_INTERSECTRGN);
-        if (hdc) {
-            RECT windowrect, workrect;
-            GetWindowRect(hwnd, &windowrect);
-
-            HBRUSH hBlueBrush = CreateSolidBrush(RGB(0,0,255));
-            int framewidth = GetSystemMetrics(SM_CXSIZEFRAME);
-            int frameheight = GetSystemMetrics(SM_CYSIZEFRAME);
-
-            // draw the top border.
-            workrect.top = 0;
-            workrect.left = 0;
-            workrect.right = windowrect.right - windowrect.left;
-            workrect.bottom = frameheight;
-            FillRect(hdc, &workrect, hBlueBrush);
-
-            // draw the left border.
-            workrect.top = 0;
-            workrect.left = 0;
-            workrect.right = framewidth;
-            workrect.bottom = windowrect.bottom - windowrect.top;
-            FillRect(hdc, &workrect, hBlueBrush);
-
-            // draw the right border.
-            workrect.top = 0;
-            workrect.left = windowrect.right - windowrect.left - framewidth;
-            workrect.right = windowrect.right - windowrect.left;
-            workrect.bottom = windowrect.bottom - windowrect.top;
-            FillRect(hdc, &workrect, hBlueBrush);
-
-            // draw the bottom border.
-            workrect.top = windowrect.bottom - windowrect.top - frameheight;
-            workrect.left = 0;
-            workrect.right = windowrect.right - windowrect.left;
-            workrect.bottom = windowrect.bottom - windowrect.top;
-            FillRect(hdc, &workrect, hBlueBrush);
-
-            //HPEN hBluePenWidth = CreatePen(PS_INSIDEFRAME, framewidth, RGB(0,0,255));
-            //HPEN hBluePenHeight = CreatePen(PS_INSIDEFRAME, frameheight, RGB(0,0,255));
-            //Rectangle(hdc, windowrect.left, windowrect.top, windowrect.right, windowrect.bottom);
-
-            DeleteObject(hBlueBrush);
-            ReleaseDC(hwnd, hdc);
-        }
-
-        // Return the original result code.
-        return lResult;
-    } else {
-        return CallWindowProc(lpfnOldWindowProc, hwnd, uMsg, wParam, lParam);
-    }
-}
-
-
-static void ForceNonclientRepaint(HWND hwnd)
-{
-    RedrawWindow(hwnd, NULL, NULL, RDW_FRAME | RDW_INVALIDATE | RDW_NOINTERNALPAINT | RDW_ERASENOW);
-}
-
-
-
-static BOOL CALLBACK EnumWindowsProc(
-  HWND hwnd,      // handle to parent window
-  LPARAM lParam   // application-defined value
-)
-{
-    char szClassName[64];
-    if (GetClassName(hwnd, szClassName, sizeof(szClassName)) &&
-        strcmp(szClassName, "mIRC32") == 0)
-    {
-        DWORD windowpid;
-        GetWindowThreadProcessId(hwnd, &windowpid);
-        if (windowpid == GetCurrentProcessId()) {
-            // Found the window that is from our process.  Subclass it.
-
-            if (!lpfnOldWindowProc) {
-                hwndSavedWindow = hwnd;
-                lpfnOldWindowProc = (WNDPROC) GetWindowLong(hwnd, GWL_WNDPROC);
-                SetWindowLong(hwnd, GWL_WNDPROC, (DWORD) Detour_mIRCWindowProc);
-                ForceNonclientRepaint(hwnd);
-            }
-
-            return FALSE;       // done enumerating.
-        }
-    }
-    return TRUE;        // continue enumerating.
-}
-
-static void SearchAndSubclassWindow(void)
-{
-    if (!lpfnOldWindowProc) {
-        EnumWindows(EnumWindowsProc, 0);
-    }
-}
-
-#endif
-
-
-// -----------------------------------
-
-// mIRC plugin specific things follow...
-
-
-//! Method exported to mIRC that can be invoked to manually load the library.
-/*
- * This doesn't really do anything significant, since simply loading the
- * library into the process-space will cause the winsock hooks to be installed.
- */
-extern "C" int __declspec(dllexport) __stdcall load_stunnel(
-      HWND mWnd, HWND aWnd, char *data, char *parms, BOOL show, BOOL nopause)
-{
-    DOUT(("mIRC callback for load_stunnel invoked\n"));
-    strcpy(data, "/echo -s STunnel transparent hook is installed.");
-
-#ifdef SECUREBLUEWINDOW
-    if (!lpfnOldWindowProc) {
-        hwndSavedWindow = mWnd;
-        lpfnOldWindowProc = (WNDPROC) GetWindowLong(mWnd, GWL_WNDPROC);
-        SetWindowLong(mWnd, GWL_WNDPROC, (DWORD) Detour_mIRCWindowProc);
-        ForceNonclientRepaint(mWnd);
-    }
-#endif
-
-    return 2;       // mIRC should execute the command we returned..
-}
-
-//! Internal mIRC structure used to supervise library loading.
-typedef struct {
-    DWORD  mVersion;
-    HWND   mHwnd;
-    BOOL   mKeep;
-} LOADINFO;
-
-//! Method exported to mIRC to indicate that it should leave the library
-//! always loaded, even after execution of the exported method has been run.
-extern "C" void __declspec(dllexport) __stdcall LoadDll(LOADINFO *loadinfo)
-{
-    DOUT(("mIRC callback for LoadDll invoked\n"));
-    loadinfo->mKeep = TRUE;
-}
-
-//! Method exported to mIRC to that it calls before it unloads the library.
-/*
- * The only thing that this method does is try to disallow mIRC from
- * unloading our library (and breaking our hooks).
- */
-extern "C" int __declspec(dllexport) __stdcall UnloadDll(int mTimeout)
-{
-    DOUT(("mIRC callback for UnloadDll invoked\n"));
-    if (mTimeout == 1) {
-        DOUT(("Instructing mIRC to not automatically unload library because of inactivity.\n"));
-        return 0;       // return 0 to prevent unload, or 1 to allow it.
-    } else {
-
-#ifdef SECUREBLUEWINDOW
-        // Remove our windowproc subclassing hook.
-        if (lpfnOldWindowProc != NULL) {
-            SetWindowLong(hwndSavedWindow, GWL_WNDPROC, (DWORD) lpfnOldWindowProc);
-            lpfnOldWindowProc = NULL;
-            ForceNonclientRepaint(hwndSavedWindow);
-        }
-#endif
-
-    }
-    return 1;       // otherwise allow it.
-}
-
-
-// -----------------------------------
 

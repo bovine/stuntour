@@ -1,6 +1,6 @@
 // Transparent SSL Tunnel hooking.
 // Jeff Lawson <jlawson@bovine.net>
-// $Id: stunrun.cpp,v 1.2 2002/07/10 17:52:59 jlawson Exp $
+// $Id: stunrun.cpp,v 1.3 2003/02/03 06:34:16 jlawson Exp $
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -16,7 +16,7 @@
 #include <stdarg.h>
 
 // Microsoft Detours API hooking headers.
-#include "detours.h"
+#include <detours.h>
 
 
 //! Debug logging macros.

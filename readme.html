@@ -3,10 +3,7 @@
 		<title>StunTour: SSL Enabler for mIRC</title>
 	</head>
 	<body>
-		<h1 align="center">StunTour: SSL Enabler for mIRC</h1>
-		<P align="center">homepage: <A href="http://www.bovine.net/~jlawson/coding/stuntour/">
-				http://www.bovine.net/~jlawson/coding/stuntour/</A></P>
-		<P>&nbsp;</P>
+		<h1>StunTour: SSL Enabler for mIRC</h1>
 		<h2>Background</h2>
 		<p>
 			Being able to connect securely to SSL-enabled IRC chat servers is something 
@@ -73,12 +70,12 @@
 	/dll -u stuntour.dll
 </pre>
 		<h2>Okay it's loaded, how do I use it?</h2>
-		<p>StunTour is a automatically intercepts connections with destination port of 994. 
-			Simply configure mIRC to directly connect to the IRC server on port 994 and 
-			that connection will be automatically wrapped in an SSL encrypted tunnel.&nbsp; 
-			Actually, StunTour currently allows any of the following ports to be used 
-			(contact me if your IRC network uses a port that is not listed and I'll add 
-			it):</p>
+		<p>
+			StunTour is a automatically intercepts connections with destination port of 
+			994. Simply configure mIRC to directly connect to the IRC server on port 994 
+			and that connection will be automatically wrapped in an SSL encrypted 
+			tunnel.&nbsp; Actually, by default StunTour currently allows any of the 
+			following ports to be used:</p>
 		<UL>
 			<LI>
 			994 (standard RFC allocated port for IRCS)
@@ -89,14 +86,25 @@
 			<LI>
 			6697 (axenet)
 			<LI>
-			9998, 9999 (suidnet, chatsages)
+			6999 (Biteme-irc)
+			<LI>
+			9999 (suidnet)
 			<LI>
 			6000 (wondernet)
 			<LI>
-				25401</LI>
-		</UL>
+				25401</LI></UL>
+		<P>You can also customize the list of ports the StunTour will intercept, in case 
+			you need to connect to a server using a different port (see below). 
+			&nbsp;Contact me if your IRC network uses a port that is not listed and I'll 
+			add it to a future version so that it will be intercepted for new StunTour 
+			users by default.</P>
+		<P>If you attempt to make IRC connections to a server on any other port, then a 
+			normal unencrypted connection will be made.&nbsp; Since mIRC 6.x allows 
+			multiple simultaneous connections to different servers to be made, this allows 
+			you to be connected to both SSL and non-SSL servers using the same instance of 
+			mIRC.&nbsp; Similarly, you can be connected to multiple SSL servers as well.</P>
 		<H2>How does it work?</H2>
-		<p>I'm using a the <a href="http://www.openssl.org/">OpenSSL</a> library for the 
+		<P>I'm using a the <a href="http://www.openssl.org/">OpenSSL</a> library for the 
 			implementation of the encryption layer, and the <a href="http://research.microsoft.com/sn/detours/">
 				Microsoft Detours</a> library to perform API interception/hooking on 
 			several of the standard Winsock functions. From mIRC's perspective, it is still 
@@ -106,8 +114,53 @@
 			<nobr>send()</nobr>, <nobr>recv()</nobr>, etc functions and making them utilize 
 			the OpenSSL equivalents when a connection is made to a remote server on port 
 			994.
-		</p>
-		<h2>Why is it named "stuntour"?</h2>
+		</P>
+		<P>This product includes cryptographic software written by Eric Young (<A href="mailto:eay@cryptsoft.com">eay@cryptsoft.com</A>)</P>
+		<h2>How can I connect to an IRC&nbsp;server that uses SSL on another port?</h2>
+		<P>Thre are two ways to tell StunTour to perform automaticic SSL interception on 
+			additional port numbers:</P>
+		<OL>
+			<LI>
+				Use the dynamic-library command to add interception for only this instance of 
+				mIRC (will not be remembered for future launches of mIRC/StunTour):
+				<UL>
+					<LI>
+						Inside mIRC, issue the command (where <i>xxx</i> is the port number you want to 
+						perform interception on):
+						<pre>
+	/dll stuntour.dll hook_ports <i>xxx</i>
+</pre>
+					<LI>
+					Any future server connections made to that destination port number will now 
+					utilize SSL.
+					<LI>
+						If you restart mIRC/StunTour, ports that were added to the interception list 
+						using the above command will no longer be hooked.
+					</LI>
+				</UL>
+			<LI>
+				Alter your registry to allow StunTour to always perform interceptions on 
+				certain port numbers.
+				<UL>
+					<LI>
+					You should use REGEDIT (Registry Editor) to navigate to this location:&nbsp; 
+					HKEY_CURRENT_USER\Software\Bovine Networking Technologies, Inc.\StunTour
+					<LI>
+					Edit the MULTI-SZ value named "Ports" and add any additional port numbers 
+					there.
+					<LI>
+					(Note that the default ports that StunTour intercepts cannot be removed from 
+					the list.)
+					<LI>
+						You must restart mIRC/StunTour if they are already running for the changes to 
+						the Registry to take effect.</LI></UL>
+			</LI>
+		</OL>
+		<H2>How can I always accept SSL certificate confirmation prompts?</H2>
+		<P>A future version of StunTour will permit this.&nbsp; Until then, you will have 
+			to manually click "Yes" each time you restart mIRC/StunTour and connect to a 
+			SSL server.</P>
+		<H2>Why is it named "StunTour"?</H2>
 		<p>The name is simply a shortened contraction of "SSL tunnel detour". The word 
 			"detour" is simply the name of the API hooking library that I'm using to 
 			perform some of the critical network interception calls.</p>
