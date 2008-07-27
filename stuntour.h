@@ -32,7 +32,7 @@
 
 // Transparent SSL Tunnel hooking.
 // Jeff Lawson <jlawson@bovine.net>
-// $Id: stuntour.h,v 1.5 2003/07/20 04:04:04 jlawson Exp $
+// $Id: stuntour.h,v 1.6 2008/07/27 03:08:30 jlawson Exp $
 
 #ifndef STUNTOUR_H__
 #define STUNTOUR_H__
@@ -106,6 +106,43 @@
     }
     #define DOUT(x)   dout_helper x
 #endif
+
+
+//-----------------------------
+
+class MyCriticalSection {
+	CRITICAL_SECTION crit;
+	int count;
+public:
+	MyCriticalSection() {
+		InitializeCriticalSection(&crit);
+		count = 0;
+	}
+	void Enter() {
+		EnterCriticalSection(&crit);
+		count++;
+	}
+	void Leave() {
+		count--;
+		LeaveCriticalSection(&crit);
+	}
+	int GetCount() const {
+		// only valid if currently holding the lock.
+		return count;
+	}
+};
+
+class MyScopeLocker {
+	MyCriticalSection *lockptr;
+public:
+	MyScopeLocker(MyCriticalSection &lock) {
+		lockptr = &lock;
+		lockptr->Enter();
+	}
+	~MyScopeLocker() {
+		lockptr->Leave();
+	}
+};
 
 
 //-----------------------------

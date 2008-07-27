@@ -32,7 +32,7 @@
 
 // Transparent SSL Tunnel hooking.
 // Jeff Lawson <jlawson@bovine.net>
-// $Id: stuntour.cpp,v 1.9 2004/01/22 09:08:23 jlawson Exp $
+// $Id: stuntour.cpp,v 1.10 2008/07/27 03:08:30 jlawson Exp $
 
 /*
  * The implementation of the replacement API wrappers for the send/recv
@@ -98,7 +98,7 @@ bool g_bSecureOutgoingDccChat = false;
 
 
 //! Global mutex variables to allow thread-safe access to the map.
-static CRITICAL_SECTION maplock;
+static MyCriticalSection maplock;
 
 //! This map stores all open intercepted connections.
 typedef std::map<SOCKET, SecureTunnel*> securetunnelmap_t;
@@ -580,14 +580,16 @@ static int WINAPI Detour_connect(
     }
 
     // Add the tracking information to our storage container.
-    EnterCriticalSection(&maplock);
-#ifdef USE_MAKEPAIR
-    SecureTunnelMap.insert(std::make_pair(insock, stun));
-#else
-    SecureTunnelMap.insert(std::pair<const SOCKET, SecureTunnel*>(insock, stun));
-#endif
-    LeaveCriticalSection(&maplock);
+	{
+		MyScopeLocker lock(maplock);
+	#ifdef USE_MAKEPAIR
+		SecureTunnelMap.insert(std::make_pair(insock, stun));
+	#else
+		SecureTunnelMap.insert(std::pair<const SOCKET, SecureTunnel*>(insock, stun));
+	#endif
+	}
 
+	// Log message and return.
     DOUT(("Detour_connect: successfully connected and attached to socket %d.\n", insock));
 
     return 0;
@@ -662,14 +664,16 @@ static SOCKET WINAPI Detour_accept(SOCKET insock, struct sockaddr *addr, int *ad
     }
 
     // Add the tracking information to our storage container.
-    EnterCriticalSection(&maplock);
-#ifdef USE_MAKEPAIR
-    SecureTunnelMap.insert(std::make_pair(outsock, stun));
-#else
-    SecureTunnelMap.insert(std::pair<const SOCKET, SecureTunnel*>(outsock, stun));
-#endif
-    LeaveCriticalSection(&maplock);
+	{
+		MyScopeLocker lock(maplock);
+	#ifdef USE_MAKEPAIR
+		SecureTunnelMap.insert(std::make_pair(outsock, stun));
+	#else
+		SecureTunnelMap.insert(std::pair<const SOCKET, SecureTunnel*>(outsock, stun));
+	#endif
+	}
 
+	// Log message and return.
     DOUT(("Detour_accept: successfully accepted and attached to socket %d.\n", outsock));
 
     return outsock;
@@ -691,15 +695,16 @@ static int WINAPI Detour_closesocket(SOCKET insock)
 
     // Free the SecureTunnel class associated with this socket, if it is
     // one of the wrapped sockets that we manage.
-    EnterCriticalSection(&maplock);
-    securetunnelmap_t::iterator iter = SecureTunnelMap.find(insock);
-    if (iter != SecureTunnelMap.end()) {
-        SecureTunnel *ptr = iter->second;
-        DOUT(("Detour_closesocket: releasing SSL structure for socket %d\n", (int) insock));
-        SecureTunnelMap.erase(insock);
-        delete ptr;
-    }
-    LeaveCriticalSection(&maplock);
+	{
+		MyScopeLocker lock(maplock);
+		securetunnelmap_t::iterator iter = SecureTunnelMap.find(insock);
+		if (iter != SecureTunnelMap.end()) {
+			SecureTunnel *ptr = iter->second;
+			DOUT(("Detour_closesocket: releasing SSL structure for socket %d\n", (int) insock));
+			SecureTunnelMap.erase(insock);
+			delete ptr;
+		}
+	}
 
     // close the actual socket and return the result.
     return Trampoline_closesocket(insock);
@@ -727,97 +732,98 @@ static int WINAPI Detour_send(
 
     // Check if this socket is one of our managed sockets.
     // If so, then handle the actual send request.
-    EnterCriticalSection(&maplock);
-    if (maplock.LockCount == 0) {
-        securetunnelmap_t::iterator iter = SecureTunnelMap.find(insock);
-        if (iter != SecureTunnelMap.end()) {
-            SecureTunnel *stun = iter->second;
-    DOUT(("-----\n"));
-            DOUT(("Detour_send: intercepting SSL send for socket %d\n", (int) insock));
-            DOUT(("Detour_send: intercepting SSL data is: %s\n", FilterPrintableBuffer(buf, len).c_str() ));
+	{
+		MyScopeLocker lock(maplock);
+		if (maplock.GetCount() == 1) {
+			securetunnelmap_t::iterator iter = SecureTunnelMap.find(insock);
+			if (iter != SecureTunnelMap.end()) {
+				SecureTunnel *stun = iter->second;
+		DOUT(("-----\n"));
+				DOUT(("Detour_send: intercepting SSL send for socket %d\n", (int) insock));
+				DOUT(("Detour_send: intercepting SSL data is: %s\n", FilterPrintableBuffer(buf, len).c_str() ));
 
-#ifdef HOOK_DCC_SCHAT
-            if (len > 0 && g_bSecureOutgoingDccChat) {
-                bool bufferchanged = false;
-                std::string buffer(buf, len);
-                for (int startpos = 0, eolpos = 0; 
-                    (eolpos = (int) buffer.find('\n', startpos)) != std::string::npos;
-                    startpos = eolpos + 1)
-                {
-                    int eolpos2 = (eolpos > 0 && buffer[eolpos - 1] == '\r' ? eolpos - 1 : eolpos);
-                    DOUT(("Detour_send: scanning received line \"%.*s\"\n", eolpos2 - startpos - 1, buffer.c_str() + startpos));
-                    if (eolpos2 <= startpos) continue;      // empty line.
+	#ifdef HOOK_DCC_SCHAT
+				if (len > 0 && g_bSecureOutgoingDccChat) {
+					bool bufferchanged = false;
+					std::string buffer(buf, len);
+					for (int startpos = 0, eolpos = 0; 
+						(eolpos = (int) buffer.find('\n', startpos)) != std::string::npos;
+						startpos = eolpos + 1)
+					{
+						int eolpos2 = (eolpos > 0 && buffer[eolpos - 1] == '\r' ? eolpos - 1 : eolpos);
+						DOUT(("Detour_send: scanning received line \"%.*s\"\n", eolpos2 - startpos - 1, buffer.c_str() + startpos));
+						if (eolpos2 <= startpos) continue;      // empty line.
 
-                    // first char must be colon, and last char must be ASCII 1 (^A).
-                    // this is a quick discriminator to screen out lines that can be ignored.
-                    if (buffer[startpos] != 'P' || buffer[eolpos2 - 1] != 1) continue;
+						// first char must be colon, and last char must be ASCII 1 (^A).
+						// this is a quick discriminator to screen out lines that can be ignored.
+						if (buffer[startpos] != 'P' || buffer[eolpos2 - 1] != 1) continue;
 
-                    // must be followed by "PRIVMSG"
-                    std::string command;
-                    if (!SplitNextToken(buffer, ' ', startpos, eolpos2, command) || strcmp(command.c_str(), "PRIVMSG") != 0) continue;
+						// must be followed by "PRIVMSG"
+						std::string command;
+						if (!SplitNextToken(buffer, ' ', startpos, eolpos2, command) || strcmp(command.c_str(), "PRIVMSG") != 0) continue;
 
-                    // must be followed by the receiving nickname ("nick" format).
-                    std::string receiver;
-                    if (!SplitNextToken(buffer, ' ', startpos, eolpos2, receiver)) continue;
+						// must be followed by the receiving nickname ("nick" format).
+						std::string receiver;
+						if (!SplitNextToken(buffer, ' ', startpos, eolpos2, receiver)) continue;
 
-                    // must be followed by ":^A" some text and a closing "^A".
-                    if (buffer[startpos] != ':' || buffer[startpos + 1] != 1 || buffer[eolpos2 - 1] != 1) continue;
-                    int ctcpend = eolpos2 - 1;
-                    startpos += 2;
+						// must be followed by ":^A" some text and a closing "^A".
+						if (buffer[startpos] != ':' || buffer[startpos + 1] != 1 || buffer[eolpos2 - 1] != 1) continue;
+						int ctcpend = eolpos2 - 1;
+						startpos += 2;
 
-                    // check if the CTCP command is a DCC CHAT.
-                    if (!SplitNextToken(buffer, ' ', startpos, ctcpend, command) || strcmp(command.c_str(), "DCC") != 0) continue;
-                    int schatstart = startpos;
-                    if (!SplitNextToken(buffer, ' ', startpos, ctcpend, command) || strcmp(command.c_str(), "CHAT") != 0) continue;
-                    if (!SplitNextToken(buffer, ' ', startpos, ctcpend, command) || strcmp(command.c_str(), "chat") != 0) continue;
+						// check if the CTCP command is a DCC CHAT.
+						if (!SplitNextToken(buffer, ' ', startpos, ctcpend, command) || strcmp(command.c_str(), "DCC") != 0) continue;
+						int schatstart = startpos;
+						if (!SplitNextToken(buffer, ' ', startpos, ctcpend, command) || strcmp(command.c_str(), "CHAT") != 0) continue;
+						if (!SplitNextToken(buffer, ' ', startpos, ctcpend, command) || strcmp(command.c_str(), "chat") != 0) continue;
 
-                    // get the IP Address and port number.
-                    std::string ipaddr, portnum;
-                    if (!SplitNextToken(buffer, ' ', startpos, ctcpend, ipaddr)) continue;
-                    SplitNextToken(buffer, ' ', startpos, ctcpend, portnum);
-                    if (portnum.empty()) continue;
+						// get the IP Address and port number.
+						std::string ipaddr, portnum;
+						if (!SplitNextToken(buffer, ' ', startpos, ctcpend, ipaddr)) continue;
+						SplitNextToken(buffer, ' ', startpos, ctcpend, portnum);
+						if (portnum.empty()) continue;
 
-                    // intercept the port and change the command to a normal DCC CHAT.
-                    AddInterceptedPort(atoi(portnum.c_str()), true);
-                    buffer.insert(schatstart, 1, 'S');   // insert an "S" so that "CHAT" becomes "SCHAT"
-                    eolpos++;   // one char longer now.                  
-                    bufferchanged = true;
-                } 
-                
-                if (bufferchanged) {
-                    const size_t buffersize = buffer.size();
-                    DOUT(("Detour_send: translated buffer \"%s\"\n", FilterPrintableBuffer(buffer.c_str(), buffersize).c_str() ));
+						// intercept the port and change the command to a normal DCC CHAT.
+						AddInterceptedPort(atoi(portnum.c_str()), true);
+						buffer.insert(schatstart, 1, 'S');   // insert an "S" so that "CHAT" becomes "SCHAT"
+						eolpos++;   // one char longer now.                  
+						bufferchanged = true;
+					} 
+	                
+					if (bufferchanged) {
+						const size_t buffersize = buffer.size();
+						DOUT(("Detour_send: translated buffer \"%s\"\n", FilterPrintableBuffer(buffer.c_str(), buffersize).c_str() ));
 
-                    retval = stun->Send(buffer.c_str(), (int) buffersize);
-                    if (retval == buffersize) {
-                        // successfully sent the command buffer fully, so turn off the translation again.
-                        g_bSecureOutgoingDccChat = false;
-                    }
-                    bHandled = true;
-                }
+						retval = stun->Send(buffer.c_str(), (int) buffersize);
+						if (retval == buffersize) {
+							// successfully sent the command buffer fully, so turn off the translation again.
+							g_bSecureOutgoingDccChat = false;
+						}
+						bHandled = true;
+					}
 
-                /* TODO:
+					/* TODO:
 
-                "PRIVMSG bovineone :.DCC CHAT chat 1116712249 3179.."
+					"PRIVMSG bovineone :.DCC CHAT chat 1116712249 3179.."
 
-                check if buffer contains "DCC CHAT" and the nickname is in our waiting list.
-                If so, change to "DCC SCHAT" and hook the specified listening port.
-                */
-            }
-#endif
+					check if buffer contains "DCC CHAT" and the nickname is in our waiting list.
+					If so, change to "DCC SCHAT" and hook the specified listening port.
+					*/
+				}
+	#endif
 
-            if (!bHandled) {
-                retval = stun->Send(buf, len);
-            }
+				if (!bHandled) {
+					retval = stun->Send(buf, len);
+				}
 
-            DOUT(("Detour_send: intercepted SSL send for socket %d returned %d\n", (int) insock, retval));
-    DOUT(("-----\n"));
-            bHandled = true;
-        }
-    } else {
-        bNested = true;
-    }
-    LeaveCriticalSection(&maplock);
+				DOUT(("Detour_send: intercepted SSL send for socket %d returned %d\n", (int) insock, retval));
+		DOUT(("-----\n"));
+				bHandled = true;
+			}
+		} else {
+			bNested = true;
+		}
+	}
 
     // If this wasn't a managed socket (or is a nested call), then do
     // the normal thing for it.
@@ -864,96 +870,97 @@ static int WINAPI Detour_recv(
 
     // Check if this socket is one of our managed sockets.
     // If so, then handle the actual read request.
-    EnterCriticalSection(&maplock);
-    if (maplock.LockCount == 0) {
-        securetunnelmap_t::iterator iter = SecureTunnelMap.find(insock);
-        if (iter != SecureTunnelMap.end()) {
-            SecureTunnel *stun = iter->second;
-    DOUT(("-----\n"));
-            DOUT(("Detour_recv: intercepting SSL recv for socket %d\n", (int) insock));
-            retval = stun->Recv(buf, len);
+	{
+		MyScopeLocker lock(maplock);
+		if (maplock.GetCount() == 1) {
+			securetunnelmap_t::iterator iter = SecureTunnelMap.find(insock);
+			if (iter != SecureTunnelMap.end()) {
+				SecureTunnel *stun = iter->second;
+		DOUT(("-----\n"));
+				DOUT(("Detour_recv: intercepting SSL recv for socket %d\n", (int) insock));
+				retval = stun->Recv(buf, len);
 
-            DOUT(("Detour_recv: intercepted SSL recv for socket %d returned %d (%s)\n", 
-                    (int) insock, retval, TranslateWinsockError(WSAGetLastError()) ));
+				DOUT(("Detour_recv: intercepted SSL recv for socket %d returned %d (%s)\n", 
+						(int) insock, retval, TranslateWinsockError(WSAGetLastError()) ));
 
-#ifdef HOOK_DCC_SCHAT
-            if (retval > 0) {
-                DOUT(("Detour_recv: got buffer \"%s\"\n", FilterPrintableBuffer(buf, retval).c_str() ));
+	#ifdef HOOK_DCC_SCHAT
+				if (retval > 0) {
+					DOUT(("Detour_recv: got buffer \"%s\"\n", FilterPrintableBuffer(buf, retval).c_str() ));
 
-                bool bufferchanged = false;
-                std::string buffer(buf, retval);
-                for (int startpos = 0, eolpos = 0; 
-                    (eolpos = (int) buffer.find('\n', startpos)) != std::string::npos;
-                    startpos = eolpos + 1)
-                {
-                    int eolpos2 = (eolpos > 0 && buffer[eolpos - 1] == '\r' ? eolpos - 1 : eolpos);
-                    DOUT(("Detour_recv: scanning received line \"%.*s\"\n", eolpos2 - startpos - 1, buffer.c_str() + startpos));
-                    if (eolpos2 <= startpos) continue;      // empty line.
+					bool bufferchanged = false;
+					std::string buffer(buf, retval);
+					for (int startpos = 0, eolpos = 0; 
+						(eolpos = (int) buffer.find('\n', startpos)) != std::string::npos;
+						startpos = eolpos + 1)
+					{
+						int eolpos2 = (eolpos > 0 && buffer[eolpos - 1] == '\r' ? eolpos - 1 : eolpos);
+						DOUT(("Detour_recv: scanning received line \"%.*s\"\n", eolpos2 - startpos - 1, buffer.c_str() + startpos));
+						if (eolpos2 <= startpos) continue;      // empty line.
 
-                    // first char must be colon, and last char must be ASCII 1 (^A).
-                    // this is a quick discriminator to screen out lines that can be ignored.
-                    if (buffer[startpos] != ':' || buffer[eolpos2 - 1] != 1) continue;
+						// first char must be colon, and last char must be ASCII 1 (^A).
+						// this is a quick discriminator to screen out lines that can be ignored.
+						if (buffer[startpos] != ':' || buffer[eolpos2 - 1] != 1) continue;
 
-                    // must be followed by the sending nickname ("nick!user@host" format).
-                    std::string sender;
-                    if (!SplitNextToken(buffer, ' ', startpos, eolpos2, sender)) continue;
+						// must be followed by the sending nickname ("nick!user@host" format).
+						std::string sender;
+						if (!SplitNextToken(buffer, ' ', startpos, eolpos2, sender)) continue;
 
-                    // must be followed by "PRIVMSG"
-                    std::string command;
-                    if (!SplitNextToken(buffer, ' ', startpos, eolpos2, command) || strcmp(command.c_str(), "PRIVMSG") != 0) continue;
+						// must be followed by "PRIVMSG"
+						std::string command;
+						if (!SplitNextToken(buffer, ' ', startpos, eolpos2, command) || strcmp(command.c_str(), "PRIVMSG") != 0) continue;
 
-                    // must be followed by the receiving nickname ("nick" format).
-                    std::string receiver;
-                    if (!SplitNextToken(buffer, ' ', startpos, eolpos2, receiver)) continue;
+						// must be followed by the receiving nickname ("nick" format).
+						std::string receiver;
+						if (!SplitNextToken(buffer, ' ', startpos, eolpos2, receiver)) continue;
 
-                    // must be followed by ":^A" some text and a closing "^A".
-                    if (buffer[startpos] != ':' || buffer[startpos + 1] != 1 || buffer[eolpos2 - 1] != 1) continue;
-                    int ctcpend = eolpos2 - 1;
-                    startpos += 2;
+						// must be followed by ":^A" some text and a closing "^A".
+						if (buffer[startpos] != ':' || buffer[startpos + 1] != 1 || buffer[eolpos2 - 1] != 1) continue;
+						int ctcpend = eolpos2 - 1;
+						startpos += 2;
 
-                    // check if the CTCP command is a DCC SCHAT.
-                    if (!SplitNextToken(buffer, ' ', startpos, ctcpend, command) || strcmp(command.c_str(), "DCC") != 0) continue;
-                    int schatstart = startpos;
-                    if (!SplitNextToken(buffer, ' ', startpos, ctcpend, command) || strcmp(command.c_str(), "SCHAT") != 0) continue;
-                    if (!SplitNextToken(buffer, ' ', startpos, ctcpend, command) || strcmp(command.c_str(), "chat") != 0) continue;
+						// check if the CTCP command is a DCC SCHAT.
+						if (!SplitNextToken(buffer, ' ', startpos, ctcpend, command) || strcmp(command.c_str(), "DCC") != 0) continue;
+						int schatstart = startpos;
+						if (!SplitNextToken(buffer, ' ', startpos, ctcpend, command) || strcmp(command.c_str(), "SCHAT") != 0) continue;
+						if (!SplitNextToken(buffer, ' ', startpos, ctcpend, command) || strcmp(command.c_str(), "chat") != 0) continue;
 
-                    // get the IP Address and port number.
-                    std::string ipaddr, portnum;
-                    if (!SplitNextToken(buffer, ' ', startpos, ctcpend, ipaddr)) continue;
-                    SplitNextToken(buffer, ' ', startpos, ctcpend, portnum);
-                    if (portnum.empty()) continue;
+						// get the IP Address and port number.
+						std::string ipaddr, portnum;
+						if (!SplitNextToken(buffer, ' ', startpos, ctcpend, ipaddr)) continue;
+						SplitNextToken(buffer, ' ', startpos, ctcpend, portnum);
+						if (portnum.empty()) continue;
 
-                    // intercept the port and change the command to a normal DCC CHAT.
-                    AddInterceptedPort(atoi(portnum.c_str()), true);
-                    buffer.erase(schatstart, 1);   // erase the "S" in "SCHAT"
-                    eolpos--;   // one char shorter now.                  
-                    bufferchanged = true;
-                } 
-                
-                if (bufferchanged) {
-                    retval = (int) buffer.size();
-                    memcpy(buf, buffer.c_str(), retval);
-                    DOUT(("Detour_recv: translated buffer \"%s\"\n", FilterPrintableBuffer(buffer.c_str(), retval).c_str() ));
-                }
-                /* TODO:
+						// intercept the port and change the command to a normal DCC CHAT.
+						AddInterceptedPort(atoi(portnum.c_str()), true);
+						buffer.erase(schatstart, 1);   // erase the "S" in "SCHAT"
+						eolpos--;   // one char shorter now.                  
+						bufferchanged = true;
+					} 
+	                
+					if (bufferchanged) {
+						retval = (int) buffer.size();
+						memcpy(buf, buffer.c_str(), retval);
+						DOUT(("Detour_recv: translated buffer \"%s\"\n", FilterPrintableBuffer(buffer.c_str(), retval).c_str() ));
+					}
+					/* TODO:
 
-                ":BovineOne!jlawson@CAD57B8.E9A55D56.1ECE52C1.IP PRIVMSG bovinemoo :[DCC CHAT chat 1116712252 5000["
+					":BovineOne!jlawson@CAD57B8.E9A55D56.1ECE52C1.IP PRIVMSG bovinemoo :[DCC CHAT chat 1116712252 5000["
 
-                see if the buffer contains "DCC SCHAT".  If so, hook the specified port and change to "DCC CHAT"
-                DCC SCHAT chat <ipaddress> <port>
-                DCC SSEND <filename> <ipaddress> <port> <filesize>
-                */
+					see if the buffer contains "DCC SCHAT".  If so, hook the specified port and change to "DCC CHAT"
+					DCC SCHAT chat <ipaddress> <port>
+					DCC SSEND <filename> <ipaddress> <port> <filesize>
+					*/
 
-            }
-#endif
+				}
+	#endif
 
-    DOUT(("-----\n"));
-            bHandled = true;
-        }
-    } else {
-        bNested = true;
-    }
-    LeaveCriticalSection(&maplock);
+		DOUT(("-----\n"));
+				bHandled = true;
+			}
+		} else {
+			bNested = true;
+		}
+	}
 
     // If this wasn't a managed socket, then do the normal thing for it.
     if (!bHandled) {
@@ -1184,9 +1191,6 @@ static int PerformStartup(void)
 
     // read in the list of additional ports from the registry
     InitializeInterceptedPortList();
-
-    // initialize our locking mutex for our critical data.
-    InitializeCriticalSection(&maplock);
 
     // Install the API hooks.
     if (!DetourFunctionWithTrampoline(

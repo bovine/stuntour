@@ -1,14 +1,16 @@
-Microsoft Visual Studio Solution File, Format Version 7.00
+Microsoft Visual Studio Solution File, Format Version 8.00
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "stuntour", "stuntour.vcproj", "{074102D4-79D2-4C48-A261-16D04A0C1987}"
+	ProjectSection(ProjectDependencies) = postProject
+	EndProjectSection
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "stunrun", "stunrun.vcproj", "{44EC9A87-7568-42D5-B5AC-C3B8BA78512F}"
+	ProjectSection(ProjectDependencies) = postProject
+	EndProjectSection
 EndProject
 Global
 	GlobalSection(SolutionConfiguration) = preSolution
-		ConfigName.0 = Debug
-		ConfigName.1 = Release
-	EndGlobalSection
-	GlobalSection(ProjectDependencies) = postSolution
+		Debug = Debug
+		Release = Release
 	EndGlobalSection
 	GlobalSection(ProjectConfiguration) = postSolution
 		{074102D4-79D2-4C48-A261-16D04A0C1987}.Debug.ActiveCfg = Debug|Win32
@@ -21,7 +23,7 @@ Global
 		{44EC9A87-7568-42D5-B5AC-C3B8BA78512F}.Release.Build.0 = Release|Win32
 	EndGlobalSection
 	GlobalSection(SolutionItems) = postSolution
-		Item:1 = readme.html
+		readme.html = readme.html
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 	EndGlobalSection

@@ -53,8 +53,8 @@ END
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 2,2,0,0
- PRODUCTVERSION 2,2,0,0
+ FILEVERSION 2,3,0,0
+ PRODUCTVERSION 2,3,0,0
  FILEFLAGSMASK 0x17L
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -72,12 +72,12 @@ BEGIN
             VALUE "Comments", "http://www.bovine.net/~jlawson/coding/stuntour/"
             VALUE "CompanyName", "Bovine Networking Technologies, Inc."
             VALUE "FileDescription", "StunTour Front-end Loader"
-            VALUE "FileVersion", "2, 2, 0, 0"
+            VALUE "FileVersion", "2, 3, 0, 0"
             VALUE "InternalName", "stunrun"
-            VALUE "LegalCopyright", "Copyright (C) 2002-2003"
+            VALUE "LegalCopyright", "Copyright (C) 2002-2005"
             VALUE "OriginalFilename", "stunrun.exe"
             VALUE "ProductName", "StunTour"
-            VALUE "ProductVersion", "2, 2, 0, 0"
+            VALUE "ProductVersion", "2, 3, 0, 0"
         END
     END
     BLOCK "VarFileInfo"

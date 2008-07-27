@@ -1,9 +1,10 @@
-<?xml version="1.0" encoding = "Windows-1252"?>
+<?xml version="1.0" encoding="Windows-1252"?>
 <VisualStudioProject
 	ProjectType="Visual C++"
-	Version="7.00"
+	Version="7.10"
 	Name="stuntour"
 	ProjectGUID="{074102D4-79D2-4C48-A261-16D04A0C1987}"
+	RootNamespace="stuntour"
 	Keyword="Win32Proj">
 	<Platforms>
 		<Platform
@@ -21,6 +22,7 @@
 				Name="VCCLCompilerTool"
 				AdditionalOptions="/Iexternal"
 				Optimization="0"
+				AdditionalIncludeDirectories="&quot;$(ProjectDir)\external&quot;"
 				PreprocessorDefinitions="WIN32;_DEBUG;_WINDOWS;_USRDLL;STUNTOUR_EXPORTS"
 				MinimalRebuild="TRUE"
 				BasicRuntimeChecks="3"
@@ -37,6 +39,7 @@
 				AdditionalDependencies="wsock32.lib"
 				OutputFile="$(OutDir)/stuntour.dll"
 				LinkIncremental="1"
+				AdditionalLibraryDirectories=""
 				IgnoreDefaultLibraryNames="libcmt"
 				GenerateDebugInformation="TRUE"
 				ProgramDatabaseFile="$(OutDir)/stuntour.pdb"
@@ -56,7 +59,13 @@
 			<Tool
 				Name="VCWebServiceProxyGeneratorTool"/>
 			<Tool
+				Name="VCXMLDataGeneratorTool"/>
+			<Tool
 				Name="VCWebDeploymentTool"/>
+			<Tool
+				Name="VCManagedWrapperGeneratorTool"/>
+			<Tool
+				Name="VCAuxiliaryManagedWrapperGeneratorTool"/>
 		</Configuration>
 		<Configuration
 			Name="Release|Win32"
@@ -71,6 +80,7 @@
 				Optimization="2"
 				InlineFunctionExpansion="1"
 				OmitFramePointers="TRUE"
+				AdditionalIncludeDirectories="&quot;$(ProjectDir)\external&quot;"
 				PreprocessorDefinitions="WIN32;NDEBUG;_WINDOWS;_USRDLL;STUNTOUR_EXPORTS"
 				StringPooling="TRUE"
 				RuntimeLibrary="0"
@@ -87,6 +97,7 @@
 				AdditionalDependencies="wsock32.lib"
 				OutputFile="$(OutDir)/stuntour.dll"
 				LinkIncremental="1"
+				AdditionalLibraryDirectories=""
 				IgnoreDefaultLibraryNames="msvcrt"
 				GenerateDebugInformation="TRUE"
 				SubSystem="2"
@@ -107,9 +118,17 @@
 			<Tool
 				Name="VCWebServiceProxyGeneratorTool"/>
 			<Tool
+				Name="VCXMLDataGeneratorTool"/>
+			<Tool
 				Name="VCWebDeploymentTool"/>
+			<Tool
+				Name="VCManagedWrapperGeneratorTool"/>
+			<Tool
+				Name="VCAuxiliaryManagedWrapperGeneratorTool"/>
 		</Configuration>
 	</Configurations>
+	<References>
+	</References>
 	<Files>
 		<Filter
 			Name="Source Files"
@@ -151,13 +170,13 @@
 			</File>
 		</Filter>
 		<File
-			RelativePath="external\detours.lib">
+			RelativePath=".\external\detours.lib">
 		</File>
 		<File
-			RelativePath="external\libeay32.lib">
+			RelativePath=".\external\libeay32.lib">
 		</File>
 		<File
-			RelativePath="external\ssleay32.lib">
+			RelativePath=".\external\ssleay32.lib">
 		</File>
 	</Files>
 	<Globals>
